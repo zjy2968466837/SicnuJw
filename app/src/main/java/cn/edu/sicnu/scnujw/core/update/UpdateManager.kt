@@ -96,9 +96,21 @@ object UpdateManager {
         }
     }
 
+    /**
+     * 清单地址列表（逗号分隔，按顺序尝试）。
+     *
+     * - 公开构建只配 GitHub（`releases/latest/download/latest.json`），不含任何自建地址；
+     * - 自用构建可以配「自建服务器, GitHub」两个：服务器快，GitHub 兜底。
+     * 注意：客户端能连上的地址必然在包里可被找到，这里只做可用性回退，不做地址隐藏。
+     */
+    internal fun manifestUrls(): List<String> =
+        BuildConfig.UPDATE_MANIFEST_URL.split(',')
+            .map { it.trim() }
+            .filter { it.startsWith("https://") || it.startsWith("http://") }
+
     suspend fun check(ctx: Context, forceCheck: Boolean): UpdateCheck {
-        val manifestUrl = BuildConfig.UPDATE_MANIFEST_URL.trim()
-        if (manifestUrl.isEmpty()) return UpdateCheck.Disabled
+        val urls = manifestUrls()
+        if (urls.isEmpty()) return UpdateCheck.Disabled
         val app = ctx.applicationContext
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
         if (!forceCheck && System.currentTimeMillis() < prefs.getLong(KEY_NEXT_CHECK_AT, 0L)) {
@@ -106,7 +118,7 @@ object UpdateManager {
         }
 
         return try {
-            val info = withContext(Dispatchers.IO) { fetchManifest(manifestUrl) }
+            val info = withContext(Dispatchers.IO) { fetchFirst(urls) }
             prefs.edit()
                 .putLong(KEY_NEXT_CHECK_AT, System.currentTimeMillis() + OK_INTERVAL_MS)
                 .apply()
@@ -124,6 +136,25 @@ object UpdateManager {
                 .apply()
             UpdateCheck.Failed(e)
         }
+    }
+
+    /**
+     * 取所有可用清单里 versionCode 最大的那个，而不是“谁先响应谁生效”：
+     * 服务器镜像万一手工更新落后一版，用户也不会被锁在旧版本上。
+     */
+    private fun fetchFirst(urls: List<String>): UpdateInfo {
+        var best: UpdateInfo? = null
+        var last: Exception? = null
+        for (u in urls) {
+            try {
+                val info = fetchManifest(u)
+                if (best == null || info.versionCode > best.versionCode) best = info
+            } catch (e: Exception) {
+                last = e
+                Log.w(TAG, "清单不可用（${u.take(48)}…）: ${e.javaClass.simpleName}")
+            }
+        }
+        return best ?: throw (last ?: UpdateException("没有可用的更新清单"))
     }
 
     private fun fetchManifest(url: String): UpdateInfo {

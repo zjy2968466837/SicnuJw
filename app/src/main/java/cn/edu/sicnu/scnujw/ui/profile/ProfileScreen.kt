@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -62,6 +63,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.NavController
 import cn.edu.sicnu.scnujw.BuildConfig
+import cn.edu.sicnu.scnujw.R
 import cn.edu.sicnu.scnujw.core.auth.AuthGuard
 import cn.edu.sicnu.scnujw.core.auth.AuthSessionManager
 import cn.edu.sicnu.scnujw.core.auth.AuthSystem
@@ -173,6 +175,7 @@ fun ProfileScreen(nav: NavController) {
             AppearanceSection()
             ZhxgSection(nav)
             FeatureEntries(nav)
+            RepoSection()
             QuickLinksSection()
             SessionSection(nav)
             ProfileFooter()
@@ -606,6 +609,66 @@ private val FEATURES = buildList {
     add(FeatureEntry("空闲教室", "按时间/地点查空教室", Icons.Filled.Schedule, "roomfree"))
     add(FeatureEntry("诊断日志", "抓取页面响应 / 导出日志", Icons.Filled.BugReport, "diag"))
     add(FeatureEntry("证明打印", "学籍 / 成绩证明（官方页）", Icons.Filled.Print, ""))
+}
+
+/**
+ * 开源入口：与「功能入口」同构的单独区域（同一张卡、同 56dp 行高、左侧图标 + 右侧箭头），
+ * 点击用系统浏览器打开仓库。仓库地址是公开信息。
+ */
+@Composable
+private fun RepoSection() {
+    val ctx = LocalContext.current
+    val cs = MaterialTheme.colorScheme
+    Column {
+        Text("开源", style = MaterialTheme.typography.titleMedium, color = cs.onBackground)
+        Spacer(Modifier.height(ScnuSpacing.s))
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            color = cs.surface,
+            shape = MaterialTheme.shapes.large,
+            border = BorderStroke(ScnuTokens.CardBorder, cs.outline),
+        ) {
+            Row(
+                Modifier.fillMaxWidth()
+                    .heightIn(min = 56.dp)
+                    .clickable(role = Role.Button) { openRepo(ctx) }
+                    .padding(horizontal = ScnuSpacing.l, vertical = ScnuSpacing.s),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    painterResource(R.drawable.ic_github),
+                    contentDescription = null,
+                    tint = cs.primary,
+                    modifier = Modifier.size(24.dp),
+                )
+                Spacer(Modifier.width(ScnuSpacing.m))
+                Column(Modifier.weight(1f)) {
+                    Text("GitHub 仓库", style = MaterialTheme.typography.bodyLarge, color = cs.onSurface)
+                    Text(
+                        "源码 · 版本发布 · 问题反馈",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                }
+                Icon(
+                    Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    tint = cs.outline,
+                    modifier = Modifier.size(20.dp),
+                )
+            }
+        }
+    }
+}
+
+private const val REPO_URL = "https://github.com/zjy2968466837/SicnuJw"
+
+private fun openRepo(ctx: Context) {
+    runCatching {
+        ctx.startActivity(
+            Intent(Intent.ACTION_VIEW, Uri.parse(REPO_URL)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        )
+    }.onFailure { Toast.makeText(ctx, "没有可用的浏览器", Toast.LENGTH_SHORT).show() }
 }
 
 @Composable

@@ -29,6 +29,13 @@ android {
             ?: localProps.getProperty("updateManifestUrl")
             ?: "").trim()
         buildConfigField("String", "UPDATE_MANIFEST_URL", "\"$updateUrl\"")
+
+        // 统计服务地址。公开构建留空 = 不启用统计（APK 内不含任何自建服务地址）；
+        // 自用构建在 local.properties 里配 statsEndpoint=https://<host>/v1/stats。
+        val statsUrl = (providers.gradleProperty("statsEndpoint").orNull
+            ?: localProps.getProperty("statsEndpoint")
+            ?: "").trim()
+        buildConfigField("String", "STATS_ENDPOINT", "\"$statsUrl\"")
     }
 
     buildTypes {

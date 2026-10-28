@@ -115,15 +115,19 @@ fun DiagScreen(nav: NavController) {
                     color = cs.outline.copy(alpha = ScnuTokens.OutlineAlpha),
                     thickness = ScnuTokens.Hairline,
                 )
-                SwitchRow(
-                    title = "参与使用统计",
-                    sub = "只上传学号前 4 位、匿名设备标识与版本信息；不含姓名/完整学号/成绩",
-                    checked = statsOn,
-                    onCheckedChange = { on ->
-                        statsOn = on
-                        StatsReporter.setEnabled(ctx, on)
-                    },
-                )
+                // 公开构建没有配置统计服务（APK 内不含自建地址），这一项直接不显示，
+                // 避免出现「开关打开但什么也不发」的假象
+                if (StatsReporter.isConfigured()) {
+                    SwitchRow(
+                        title = "参与使用统计",
+                        sub = "只上传学号前 4 位、匿名设备标识与版本信息；不含姓名/完整学号/成绩",
+                        checked = statsOn,
+                        onCheckedChange = { on ->
+                            statsOn = on
+                            StatsReporter.setEnabled(ctx, on)
+                        },
+                    )
+                }
             }
 
             SectionCard {

@@ -76,8 +76,11 @@ object StatsReporter {
             .build()
     }
 
+    /** 公开构建不配置 STATS_ENDPOINT：功能代码在，但不会发出任何请求 */
+    fun isConfigured(): Boolean = BuildConfig.STATS_ENDPOINT.trim().startsWith("https://")
+
     fun isEnabled(ctx: Context): Boolean =
-        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        isConfigured() && ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_STATS_ENABLED, true)
 
     fun setEnabled(ctx: Context, enabled: Boolean) {
@@ -124,14 +127,14 @@ object StatsReporter {
         }
     }
 
-    /** 统计接口地址从更新清单地址推导：同 host、同端口、同证书，避免第二套配置 */
-    internal fun endpoint(): String? {
-        val base = BuildConfig.UPDATE_MANIFEST_URL.trim()
-        if (!base.startsWith("https://")) return null   // 只走 TLS
-        val cut = base.lastIndexOf('/')
-        if (cut <= "https://".length) return null
-        return base.substring(0, cut) + "/v1/stats"
-    }
+    /**
+     * 统计接口地址：构建期由 `statsEndpoint` 显式给出（local.properties / -P）。
+     *
+     * 不再从更新清单地址推导——公开构建的更新清单在 GitHub，统计服务是自建的，
+     * 两者不同源；显式配置也让公开构建可以做到「APK 内零自建服务地址」。
+     */
+    internal fun endpoint(): String? =
+        BuildConfig.STATS_ENDPOINT.trim().takeIf { it.startsWith("https://") }
 
     /** 上报体：字段即白名单，新增字段前先确认它不含任何个人身份信息 */
     internal fun buildPayload(
