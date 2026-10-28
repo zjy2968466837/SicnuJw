@@ -40,7 +40,6 @@ import cn.edu.sicnu.scnujw.ui.common.ScnuRefreshableSourceBadge
 import cn.edu.sicnu.scnujw.ui.common.ScnuStatePanel
 import cn.edu.sicnu.scnujw.ui.common.ScnuStatusBadge
 import cn.edu.sicnu.scnujw.ui.common.dataIssueOf
-import cn.edu.sicnu.scnujw.ui.common.dataIssueShort
 import cn.edu.sicnu.scnujw.ui.common.issueCopy
 import cn.edu.sicnu.scnujw.ui.theme.BadgeShape
 import cn.edu.sicnu.scnujw.ui.theme.NumLarge
@@ -152,12 +151,17 @@ class ExamsViewModel : ViewModel() {
                 val kind = dataIssueOf(e)
                 // 空/失败不再回落示例数据
                 if (hasData) {
-                    // 旧数据继续留在屏幕上，只用行内提示说明这次没换成
-                    notice = if (term != null) {
-                        "「${terms[term] ?: term}」读取失败：${dataIssueShort(kind)}，当前显示上次缓存"
-                    } else {
-                        "刷新失败：${dataIssueShort(kind)}，当前显示上次缓存"
-                    }
+                    // 旧数据继续留在屏幕上，只用行内提示说明这次没换成。
+                    // 文案按「屏幕上到底是谁的数据」区分：cached != null 说明该学期缓存已上屏，
+                    // 本次只是联网刷新失败；cached == null 说明该学期从未加载成功，
+                    // 屏幕上仍是别的学期，提示里必须把「想看的」和「正在显示的」都写出来。
+                    notice = examTermFailureNotice(
+                        wanted = term,
+                        cachedShown = cached != null,
+                        shown = currentTerm,
+                        terms = terms,
+                        kind = kind,
+                    )
                 } else {
                     issue = kind
                     error = "考试安排暂时读不到。" + networkHint(e)
@@ -176,6 +180,15 @@ class ExamsViewModel : ViewModel() {
     fun refresh(ctx: Context) {
         val term = currentTerm
         load(ctx, if (term == defaultTerm) null else term, force = true)
+    }
+
+    /**
+     * 行内提示的「重试」：按用户最近一次选中的学期（pendingTerm）重发。
+     * force=true 是刻意的——失败前可能命中过缓存（缓存态本来不会自动联网），
+     * 只带 force=false 重试会命中原缓存直接返回，看起来像点了没反应。
+     */
+    fun retry(ctx: Context) {
+        load(ctx, pendingTerm, force = true)
     }
 
     private fun applyHtml(
@@ -290,8 +303,24 @@ fun ExamsScreen(
             ScnuRefreshBar("正在刷新考试安排")
         }
 
-        // 刷新/切学期失败：旧列表保持可见，行内提示说明这次没换成（与学习进度/选课成绩同款）
-        ScnuInlineNotice(vm.notice, tone = ScnuNoticeTone.Warning)
+        // 刷新/切学期失败：旧列表保持可见，行内提示说明这次没换成（与学习进度/选课成绩同款）。
+        // 提示右侧给「重试」：按用户最后选中的学期（pendingTerm）重发——切学期失败时下拉里那个
+        // 学期仍在，重试入口挨着原因放，不用再去下拉里找一遍。
+        if (vm.notice != null) {
+            Row(
+                Modifier.fillMaxWidth().padding(end = ScnuSpacing.m),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                ScnuInlineNotice(vm.notice, Modifier.weight(1f), tone = ScnuNoticeTone.Warning)
+                TextButton(onClick = { vm.retry(ctx) }) {
+                    Text(
+                        "重试",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = cs.onSurface,
+                    )
+                }
+            }
+        }
 
         when {
             !vm.loaded -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {

@@ -473,10 +473,12 @@ object ScoreCache {
         }
     }
 
-    // ── 入学年份（学期下拉裁剪依据）──
+    // ── 入学学年（学期下拉裁剪依据）──
     //
     // 不新增网络请求：学号取学生信息卡页面缓存（含 sno），回退 profile.json 记账学号；
     // 年级优先学生信息卡页头「年级」，其次平时成绩页头解析出的年级（writeGrade 落盘）。
+    // 学号/年级字段都是「级别年」（2026 级），级别年本身就是「入学学年起始年」
+    // （2026 级 → 2026，首学期 26271 = 2026-2027 学年第一学期），与学期码 startYear 同口径。
     // 两者都拿不到就返回 null，调用方必须按「不过滤」处理——绝不凭猜测隐藏数据。
 
     private const val GRADE = "grade"
@@ -498,22 +500,41 @@ object ScoreCache {
     }
 
     /**
-     * 入学年份 = min(学号前四位年份, 年级)，学号优先。
+     * 返回**入学学年起始年** = 级别年原值（2026 级 → 2026，首学期 26271 = 2026-2027 学年
+     * 第一学期），学期码 startYear 可直接与之比较。
      *
-     * 「年级」字段可能晚于实际修课年份（样例学号 2023 开头、年级 2024，
-     * 2023-2024 学年 23241/23242 已有 32 条成绩）：只按年级裁剪会把有成绩的旧学期删掉，
-     * 所以取两者中较早的年份。只有一项时用该项；都拿不到返回 null（= 不过滤学期）。
+     * 级别年取 min(学号前四位年份, 年级)，学号优先：「年级」字段可能晚于实际修课年份
+     * （样例学号 2023 开头、年级 2024，2023-2024 学年 23241/23242 已有 32 条成绩），
+     * 只按年级裁剪会把有成绩的旧学期删掉，所以取两者中较早的年份。只有一项时用该项；
+     * 都拿不到返回 null（= 不过滤学期）。
+     *
+     * 为什么**不做**「级别年 - 1」：学号/年级字段是级别年（2026 级 = 2026 年入学的这一届），
+     * 而学期码前两位是学年起始年——2026 级 2026 年 9 月入学，首学期是 26271
+     * （2026-2027 学年第一学期），两者本就是同一口径。减 1 会把开学首学期当成「入学前」，
+     * 2026 级因此看到 2025-2026 学年的学期。结果落在 2000..2100 之外视为不可信，
+     * 返回 null 而不是硬凑一个年份。
      */
     fun enrollmentYear(ctx: Context): Int? {
         val info = readPage(ctx, Keys.STUDENT_INFO)?.let { StudentInfoParser.parse(it.html) }
         val snoYear = (info?.sno?.takeIf { it.isNotBlank() } ?: profileCode(ctx))
             ?.take(4)?.toIntOrNull()?.takeIf { it in 2000..2100 }
         val gradeYear = info?.grade?.let { gradeOf(it) } ?: readGrade(ctx)
-        return when {
+        return enrollmentYearOf(snoYear, gradeYear)
+    }
+
+    /**
+     * 级别年（学号前四位 / 年级字段）→ 入学学年起始年：级别年原值（26 级 → 2026，
+     * 首学期 26271；25 级 → 2025，首学期 25261）。
+     * 单独抽出来是为了让换算口径可被 JVM 单测锁住（[enrollmentYear] 本身依赖 Context）。
+     * 结果不在 2000..2100 → null（按未知处理，不过滤），不做 coerceIn 硬夹。
+     */
+    internal fun enrollmentYearOf(snoYear: Int?, gradeYear: Int?): Int? {
+        val levelYear = when {
             snoYear != null && gradeYear != null -> minOf(snoYear, gradeYear)
             snoYear != null -> snoYear
             else -> gradeYear
         }
+        return levelYear?.takeIf { it in 2000..2100 }
     }
 
     // ── 缓存归属账号（单账号单配置）──

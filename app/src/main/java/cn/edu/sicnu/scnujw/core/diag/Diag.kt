@@ -13,7 +13,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * 诊断日志：记录「发到解析器手里的原始响应」与关键事件，用于排查页面结构变化与登录/网络故障。
@@ -49,6 +49,20 @@ object Diag {
     private const val MAX_EVENT_CHARS = 2_000
 
     /**
+     * 重复事件聚合窗口：同一 repeatKey 在这段时间内的重复不再逐条落盘，只计数。
+     *
+     * 真机日志里 11 条一模一样的「SocketException: Socket closed」占掉半页，肉眼和比对都被噪声淹没；
+     * 完全去重又会丢掉「失败了多少次」——而次数正是判断「服务端抖了一下」还是
+     * 「每次进页面都必然失败」的依据。所以保留首条 + 窗口结束后的计数汇总。
+     */
+    private const val REPEAT_WINDOW_MS = 60_000L
+    /**
+     * 聚合表容量上限。正常情况下窗口数 = 不同 key 数，远小于此；
+     * 这是硬上限，超限时先结账最旧的再淘汰，只为防异常情况下内存无限增长。
+     */
+    private const val MAX_REPEAT_KEYS = 32
+
+    /**
      * 抓取默认开启：排查看的是「故障发生那一次」的现场，事后开关已经错过。
      * 安全性由「本机私有目录 + 写入/导出双重脱敏 + 不联网 + 可随时关闭 + zhxg 整域禁抓」保证，
      * 见文件头注释。用户显式关掉后写 false，一律以用户选择为准。
@@ -60,6 +74,24 @@ object Diag {
     }
     @Volatile private var lastAt = 0L
     @Volatile private var appCtx: Context? = null
+
+    // ── 重复事件聚合状态（只在内存，进程重启即清空，不影响已落盘的日志）──
+    /**
+     * 聚合逻辑本身（纯内存状态机，线程安全由其内部锁保证，见 [RepeatAggregator]）。
+     * 进程在窗口内被杀时未结账的计数会丢——这是内存方案的固有限制；崩溃事件本身
+     * 走 awaitWrite 旁路聚合，不受影响。
+     */
+    private val repeat = RepeatAggregator(REPEAT_WINDOW_MS, MAX_REPEAT_KEYS, MAX_EVENT_CHARS)
+    /**
+     * 窗口结束的兜底定时器：没有后续事件时，只有它能让最后一段突发补上汇总行
+     * （否则「失败一阵 → 再也不失败 → 导出日志」永远看不到「重复 N 次」）。
+     * 单线程即可；到点只结已过窗的桶，未过窗的重新排下一次。
+     */
+    private val repeatTimer = Executors.newSingleThreadScheduledExecutor { r ->
+        Thread(r, "diag-repeat").apply { isDaemon = true }
+    }
+    /** 同一时刻最多只排一个定时任务，避免每次事件都新建任务 */
+    private val repeatCheckScheduled = AtomicBoolean(false)
 
     fun init(ctx: Context) {
         appCtx = ctx.applicationContext
@@ -166,22 +198,97 @@ object Diag {
      *
      * @param awaitWrite 崩溃路径专用：进程在 uncaught handler 返回后马上被杀，
      *   异步排队大概率丢；置 true 时同步等一次写入（最多 2 秒）再返回。
+     * @param repeatKey 可选：同一 key 的重复事件在 [REPEAT_WINDOW_MS] 内不再逐条落盘，只计数；
+     *   窗口结束时补一条「…（60s 内重复 N 次）」汇总行，N = 首条之后被抑制的次数
+     *   （首条自己已经落过一行，N 不再把它算进去）。「窗口结束」有三种触发：同 key 的下一次事件、
+     *   定时器到点、导出前，所以最后一段突发不会因为「之后没有新事件」而丢失汇总。
+     *   首条始终照常落盘，所以单次失败不会因为聚合而丢失；不传 = 旧行为，每条都写。
+     *   key 只用于内存比对、**不写进日志**，所以可以带 host/path，但不要放 sid/票据。
      */
-    fun recordEvent(type: String, detail: String, awaitWrite: Boolean = false) {
+    fun recordEvent(
+        type: String,
+        detail: String,
+        awaitWrite: Boolean = false,
+        repeatKey: String? = null,
+    ) {
         runCatching {
             val ctx = appCtx ?: return
             if (!isEnabled(ctx)) return
             // 值本身没意义，但万一 detail 里带了禁抓域（例如异常消息回显了 URL），一并丢弃
             if (isBlocked(detail)) return
             val safe = sanitize(ctx, detail).take(MAX_EVENT_CHARS)
-            val obj = JSONObject()
-                .put("ts", System.currentTimeMillis())
-                .put("src", "event")
-                .put("type", type)
-                .put("detail", safe)
-            lastAt = System.currentTimeMillis()
-            append(ctx, obj, awaitWrite)
+            // awaitWrite（崩溃）要求「返回前已经落盘」，与「抑制落盘只计数」天然冲突，不走聚合
+            val lines = if (repeatKey == null || awaitWrite) {
+                listOf(RepeatAggregator.Line(type, safe))
+            } else {
+                // 只用墙钟判窗口：偶发跳变最多让汇总早/晚一条，不影响记录本身
+                val now = System.currentTimeMillis()
+                val out = repeat.resolve(type, safe, repeatKey, now)
+                // 排一个「窗口结束」兜底：没有后续事件时也要有汇总（见 repeatTimer）
+                scheduleRepeatCheck()
+                out
+            }
+            if (lines.isEmpty()) return   // 窗口内的重复：已计数，本次不落盘
+            val ts = System.currentTimeMillis()
+            for (line in lines) {
+                append(ctx, eventObject(line, ts), awaitWrite)
+            }
+            lastAt = ts
         }
+    }
+
+    /** 一条事件对应的落盘 JSON；HTTP/WebView 走 [record]，事件行只有 src/type/detail */
+    private fun eventObject(line: RepeatAggregator.Line, ts: Long): JSONObject = JSONObject()
+        .put("ts", ts)
+        .put("src", "event")
+        .put("type", line.type)
+        .put("detail", line.detail)
+
+    /** 约定：同一时刻最多排一个定时任务；到点时若还有未过窗的桶，自己再排下一次 */
+    private fun scheduleRepeatCheck() {
+        val due = repeat.nextDueAt() ?: return
+        if (!repeatCheckScheduled.compareAndSet(false, true)) return
+        val delay = (due - System.currentTimeMillis()).coerceAtLeast(1L)
+        runCatching {
+            repeatTimer.schedule({ drainExpiredRepeats() }, delay, TimeUnit.MILLISECONDS)
+        }.onFailure { repeatCheckScheduled.set(false) }
+    }
+
+    /**
+     * 定时任务：结掉已过窗的桶（没有新事件时窗口也照样会结束）。
+     * 写盘仍丢给 [io] 单线程队列，与普通事件保持同一顺序；失败一律吞掉。
+     */
+    private fun drainExpiredRepeats() {
+        repeatCheckScheduled.set(false)
+        runCatching {
+            val ctx = appCtx ?: return
+            // 用户中途关掉抓取：不要再往文件里写（与 record/recordEvent 的开关判断保持一致）
+            if (!isEnabled(ctx)) {
+                repeat.clear()
+                return
+            }
+            val now = System.currentTimeMillis()
+            val lines = repeat.flushExpired(now)
+            if (lines.isNotEmpty()) {
+                val ts = System.currentTimeMillis()
+                for (line in lines) append(ctx, eventObject(line, ts))
+                lastAt = ts
+            }
+            // 期间可能又开了新窗口（或还有未到点的）：继续等下一次
+            if (repeat.nextDueAt() != null) scheduleRepeatCheck()
+        }
+    }
+
+    /**
+     * 导出前结账：内存里还没到点的窗口也直接补成汇总行，并同步等写盘完成
+     * （复用 [append] 的 awaitWrite，保证汇总行先于读文件，且排在已排队的写入之后）。
+     */
+    private fun flushRepeatsBeforeExport(ctx: Context) {
+        val lines = repeat.flushAll()
+        if (lines.isEmpty()) return
+        val ts = System.currentTimeMillis()
+        for (line in lines) append(ctx, eventObject(line, ts), awaitWrite = true)
+        lastAt = ts
     }
 
     /** 追加一行：轮转规则只有这一处，HTTP/WebView/事件共用 */
@@ -211,11 +318,20 @@ object Diag {
             file(ctx).delete()
             File(file(ctx).parentFile, ROTATED).delete()
             lastAt = 0L
+            // 聚合窗口一并作废：否则清空后还会补一条指向已在日志里删掉的「首条」的汇总
+            repeat.clear()
         }
     }
 
-    /** 导出为纯文本：头部写清版本/设备/脱敏规则，后面逐条正文 */
+    /**
+     * 导出为纯文本：头部写清版本/设备/脱敏规则，后面逐条正文。
+     *
+     * 读文件前先把内存里的聚合窗口结账（_同步_写盘），否则「失败一阵 → 立刻导出」
+     * 这种最有价值的现场只能看到首条，看不到「重复 N 次」。导出由 UI 的 Dispatchers.IO 调用，
+     * 不在 [io] 线程上，因此这里的 submit().get() 不会自等死锁。
+     */
     fun export(ctx: Context, out: OutputStream) {
+        flushRepeatsBeforeExport(ctx)
         out.write(buildHeader(ctx).toByteArray(Charsets.UTF_8))
         listOf(File(file(ctx).parentFile, ROTATED), file(ctx)).forEach { f ->
             if (!f.isFile) return@forEach
@@ -273,6 +389,9 @@ object Diag {
         append("#       公开分享前请再自行过目；页面里可能仍有课程名/教师名等校内信息。\n")
         append("# 记录类型: http/webview = 页面原文；event = 关键事件（auth 登录 / parse 解析失败 /\n")
         append("#           net 网络失败 / crash 崩溃摘要），detail 只有一句脱敏后的描述。\n")
+        append("#           同一 net 失败 60s 内反复出现时只记首条，窗口结束时补一条汇总\n")
+        append("#           （60s 到点、下一次同 key 事件或导出前都会结账，所以最后一轮突发也有汇总），\n")
+        append("#           「（60s 内重复 N 次）」里的 N = 首条之后被抑制的次数。\n")
         append("#\n")
         append("# 排查用法: 找到对应的 url + body，核对表格列头/字段名与解析器 (core/jw/*Parser.kt) 的取值；\n")
         append("#           先看 crash/net 定位环境问题，再看 parse 附近的 http 记录核对页面结构。\n\n")

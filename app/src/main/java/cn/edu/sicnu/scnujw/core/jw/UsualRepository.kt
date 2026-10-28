@@ -48,6 +48,14 @@ object UsualRepository {
     private const val FAIL_COOLDOWN_MS = 60_000L
     private const val TERM_GAP_MS = 250L
 
+    /**
+     * 入学学年未知时保留的学期数：**当前学期 + 之前最近 4 个**（共 5 个）。
+     * 窗口作用在「已含当前学期」的 merged 上，所以是 5 而不是 4——少取一个会漏掉
+     * 「已有平时成绩、还没出期末成绩」的上一学期（例如 24241）。
+     * 只为避免把入学前的历史学期全部当目标去拉取（已缓存/有成绩的学期不受此限制）。
+     */
+    private const val UNKNOWN_YEAR_WINDOW = 5
+
     private val mutex = Mutex()
 
     @Volatile private var lastFailureAt = 0L
@@ -58,7 +66,7 @@ object UsualRepository {
         beforeWrite: () -> Boolean = { true },
         onProgress: (UsualProgress) -> Unit = {},
     ): UsualProgress? = mutex.withLock {
-        val grade = ScoreCache.enrollmentYear(ctx)
+        val enrollmentYear = ScoreCache.enrollmentYear(ctx)
         var cached = ScoreCache.readAllUsualTerms(ctx)
         val aggregate = ScoreCache.readUsualAll(ctx)
         // 升级迁移：旧的全量快照拆成分学期文件，避免首次进入重拉 7 个学期
@@ -104,7 +112,7 @@ object UsualRepository {
                     cached = ScoreCache.readAllUsualTerms(ctx)
                     fromNetwork = true
                     Log.i(TAG, "学期 $currentTerm（首屏）完成：${page.courses.size} 门")
-                    val targets = targetsOf(termMap, grade, scoreTerms, cached.keys, currentTerm)
+                    val targets = targetsOf(termMap, enrollmentYear, scoreTerms, cached.keys, currentTerm)
                     onProgress(progressOf(cached, targets, emptySet(), true, null))
                 }
             } catch (e: CancellationException) {
@@ -135,7 +143,7 @@ object UsualRepository {
             )
         }
 
-        val targets = targetsOf(termMap, grade, scoreTerms, cached.keys, currentTerm)
+        val targets = targetsOf(termMap, enrollmentYear, scoreTerms, cached.keys, currentTerm)
         if (targets.isEmpty()) {
             val fallback = merge(cached, targets, termMap, currentTerm)
                 ?: return@withLock null
@@ -269,7 +277,7 @@ object UsualRepository {
      * @return 完全没有缓存（分学期文件与聚合快照都没有）时返回 null
      */
     fun readCache(ctx: Context): UsualProgress? {
-        val grade = ScoreCache.enrollmentYear(ctx)
+        val enrollmentYear = ScoreCache.enrollmentYear(ctx)
         var cached = ScoreCache.readAllUsualTerms(ctx)
         val aggregate = ScoreCache.readUsualAll(ctx)
         // 与 sync 同一迁移口径：只有聚合快照时先拆成分学期文件
@@ -287,7 +295,7 @@ object UsualRepository {
             aggregate?.data?.termMap?.forEach { (k, v) -> putIfAbsent(k, v) }
         }
 
-        val targets = targetsOf(termMap, grade, scoreTerms, cached.keys, null)
+        val targets = targetsOf(termMap, enrollmentYear, scoreTerms, cached.keys, null)
         val merged = merge(cached, targets, termMap, null)
         if (merged != null) {
             return UsualProgress(
@@ -323,28 +331,39 @@ object UsualRepository {
     }
 
     /**
-     * 目标学期：入学年份裁剪后的完整学期列表（含当前学期）。
+     * 目标学期：入学学年裁剪后的完整学期列表（含当前学期）。
      *
      * 不能只用「成绩记录里的学期」：当前学期（如 26271）往往还没有期末成绩，
-     * 但平时成绩已经录入；只看成绩记录会漏掉它。用 `filterTerms` 按入学年份裁剪，
-     * 并保留成绩记录/缓存/当前学期（recordTerms）；年份未知时最多取最近 8 个，
-     * 避免打 30+ 个空学期。
+     * 但平时成绩已经录入；只看成绩记录会漏掉它。用 [ScoreParser.filterTerms] 按入学学年裁剪，
+     * 并保留成绩记录/缓存/当前学期（recordTerms）。
+     *
+     * 入学学年未知（大一真机没有学生信息卡缓存、profile 也未记账）时不再无脑取最近 8 个：
+     * 那会把入学前的历史学期一起当成目标拉取并上屏，大一因此看到 8 个学期。改为以当前学期
+     * （[readCache] 没有当前学期时取最新学期码）为锚，只保留**当前学期 + 之前最近 4 个**
+     * （窗口含锚点共 [UNKNOWN_YEAR_WINDOW] = 5 个）；recordTerms 里的缓存学期/有成绩学期/当前学期
+     * 不受窗口限制——宁可多显示，不可藏真实数据。
+     *
+     * internal 而非 private：兜底窗口是本轮「大一显示 8 个学期」的直接修复点，需要 JVM 单测锁住。
      */
-    private fun targetsOf(
+    internal fun targetsOf(
         termMap: Map<String, String>,
-        grade: Int?,
+        enrollmentYear: Int?,
         scoreTerms: Set<String>,
         cachedTerms: Set<String>,
         currentTerm: String?,
     ): Set<String> {
         val recordTerms = scoreTerms + cachedTerms + listOfNotNull(currentTerm)
-        val filtered = ScoreParser.filterTerms(termMap, grade, recordTerms).keys
+        val filtered = ScoreParser.filterTerms(termMap, enrollmentYear, recordTerms).keys
         val merged = (filtered + recordTerms).filter { it.isNotBlank() }.toSet()
-        return if (grade == null) {
-            merged.sortedDescending().take(8).toSet()
-        } else {
-            merged
-        }
+        if (enrollmentYear != null) return merged
+
+        val anchor = currentTerm?.takeIf { it.isNotBlank() } ?: merged.maxOrNull()
+            ?: return emptySet()
+        // 学期码是 5 位定长（yy + yy + 学期），字符串比较即时间先后
+        val window = merged.filter { it <= anchor }
+            .sortedDescending()
+            .take(UNKNOWN_YEAR_WINDOW)
+        return (window + recordTerms).filter { it.isNotBlank() }.toSet()
     }
 
     private data class Merged(

@@ -153,7 +153,7 @@ object ScoreParser {
         return if (credits > 0) valid.sumOf { it.credit * it.gpa!! } / credits else null
     }
 
-    // ── 学期裁剪（按入学年份）──
+    // ── 学期裁剪（按入学学年）──
 
     /**
      * 学期码起始年：5 位码 = 起始年后两位 + 结束年后两位 + 学期(1|2)，
@@ -166,23 +166,26 @@ object ScoreParser {
     }
 
     /**
-     * 按入学年份裁剪学期下拉：只保留起始年 >= 入学年份 的学期（调用方另加「全部学期」）。
+     * 按入学学年裁剪学期下拉：只保留起始年 >= [enrollmentYear] 的学期（调用方另加「全部学期」）。
      *
-     * @param grade 入学年份（学号前四位与「年级」取较早者，见 ScoreCache.enrollmentYear）；
-     *              null = 未知 → 原样返回，绝不凭猜测隐藏数据。
+     * 2026 级（2026 年 9 月入学，2026-2027 学年）的 enrollmentYear = 2026：保留 26271/27281…，
+     * 隐藏 25262 及更早；入学学年未知（null）时原样返回，绝不凭猜测隐藏数据。
+     *
+     * @param enrollmentYear 入学学年起始年（2026 级 → 2026，见 ScoreCache.enrollmentYear），
+     *              与 [startYear] 同口径（级别年原值，不是级别年减 1）。
      * @param recordTerms 确实有成绩记录/课程块存在的学期码：**一律保留**。
      *              年级字段可能晚于实际修课年份（样例学号 2023、年级 2024，23241/23242 已有成绩），
      *              宁可多显示，不可藏真实数据。
      */
     fun filterTerms(
         terms: Map<String, String>,
-        grade: Int?,
+        enrollmentYear: Int?,
         recordTerms: Set<String> = emptySet(),
     ): Map<String, String> {
-        if (grade == null) return terms
+        if (enrollmentYear == null) return terms
         return terms.filterKeys { code ->
             val start = startYear(code)
-            start == null || start >= grade || code in recordTerms
+            start == null || start >= enrollmentYear || code in recordTerms
         }
     }
 

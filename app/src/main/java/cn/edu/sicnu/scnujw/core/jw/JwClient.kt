@@ -1,5 +1,6 @@
 package cn.edu.sicnu.scnujw.core.jw
 
+import android.os.SystemClock
 import cn.edu.sicnu.scnujw.core.auth.AuthGuard
 import cn.edu.sicnu.scnujw.core.auth.AuthSystem
 import cn.edu.sicnu.scnujw.core.net.JwTraffic
@@ -83,14 +84,26 @@ object JwClient {
             return suspendCancellableCoroutine { cont ->
                 val call = client.newCall(request)
                 cont.invokeOnCancellation { runCatching { call.cancel() } }
+                // 失败耗时要能区分「1 秒就被拒/被取消」与「45 秒读超时」，从 enqueue 前开始计时；
+                // 只在失败路径记，成功路径不记（每次刷新都带耗时会淹没真正有用的记录）
+                val startedAt = SystemClock.elapsedRealtime()
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
-                        // 诊断事件：只记 host+path 与异常类名。URL 不带 query（sid 在 query 里），
-                        // 异常消息里若回显了 URL，由 Diag 的脱敏兜底。
+                        // 诊断事件：只记 host+path、异常类名 + message 前 80 字与耗时。
+                        // URL 不带 query（sid 在 query 里）；IOException 的 message 常回显整条 URL，
+                        // 不截断会被 MAX_EVENT_CHARS 截成「...」反而看不到异常本身，脱敏仍由 Diag 兜底。
+                        val where = "${request.url.host}${request.url.encodedPath}"
+                        val msg = e.message.orEmpty().take(80)
+                        val why = if (msg.isEmpty()) {
+                            e.javaClass.simpleName
+                        } else {
+                            "${e.javaClass.simpleName}: $msg"
+                        }
                         cn.edu.sicnu.scnujw.core.diag.Diag.recordEvent(
                             "net",
-                            "${request.url.host}${request.url.encodedPath}" +
-                                "（${e.javaClass.simpleName}: ${e.message.orEmpty()}）",
+                            "$where（$why，${SystemClock.elapsedRealtime() - startedAt}ms）",
+                            // 同一页面连续同类型失败 60s 内只落首条 + 汇总，避免 11 条重复占满日志
+                            repeatKey = "net:$where:${e.javaClass.simpleName}",
                         )
                         if (cont.isActive) cont.resumeWithException(e)
                     }
