@@ -21,6 +21,8 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -35,9 +37,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import cn.edu.sicnu.scnujw.core.diag.Diag
+import cn.edu.sicnu.scnujw.core.diag.DiagReport
 import cn.edu.sicnu.scnujw.core.stats.StatsReporter
 import cn.edu.sicnu.scnujw.ui.common.ScnuScreenHeader
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
@@ -68,6 +72,9 @@ fun DiagScreen(nav: NavController) {
     LaunchedEffect(Unit) { stats = withContext(Dispatchers.IO) { Diag.stats(ctx) } }
     var confirmCapture by remember { mutableStateOf(false) }
     var working by remember { mutableStateOf(false) }
+    var reportOpen by remember { mutableStateOf(false) }
+    var reportText by remember { mutableStateOf("") }
+    var sending by remember { mutableStateOf(false) }
 
     val exportLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.CreateDocument("text/plain"),
@@ -169,6 +176,20 @@ fun DiagScreen(nav: NavController) {
                         shape = MaterialTheme.shapes.small,
                     ) { Text("清空", style = MaterialTheme.typography.labelMedium) }
                 }
+                if (DiagReport.isConfigured()) {
+                    Spacer(Modifier.height(ScnuSpacing.s))
+                    OutlinedButton(
+                        onClick = { reportOpen = true },
+                        enabled = !sending && stats.entries > 0,
+                        shape = MaterialTheme.shapes.small,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            if (sending) "发送中…" else "发送诊断（附文字说明）",
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
+                }
             }
 
             // 说明只留最关键的事实；脱敏细则以 PRIVACY.md 与 Diag 的脱敏实现为准，
@@ -205,6 +226,65 @@ fun DiagScreen(nav: NavController) {
             },
         )
     }
+
+    if (reportOpen) {
+        AlertDialog(
+            onDismissRequest = { if (!sending) reportOpen = false },
+            title = { Text("发送诊断信息", style = MaterialTheme.typography.titleMedium) },
+            text = {
+                Column {
+                    Text(
+                        "将上传最近约 500 KB 的诊断记录（与导出内容相同，学号/姓名/票据/密码等已替换为占位符），" +
+                            "以及下面的文字说明。仅在点击「发送」时上传，不含账号密码。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = cs.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(ScnuSpacing.s))
+                    OutlinedTextField(
+                        value = reportText,
+                        onValueChange = { reportText = it.take(2000) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !sending,
+                        minLines = 3,
+                        maxLines = 6,
+                        label = { Text("问题描述（可选）") },
+                        placeholder = { Text("例如：点开成绩页提示读取失败，已试过重新登录") },
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        if (sending) return@TextButton
+                        sending = true
+                        scope.launch {
+                            val err = withContext(Dispatchers.IO) { DiagReport.send(ctx, reportText) }
+                            sending = false
+                            if (err == null) {
+                                reportOpen = false
+                                reportText = ""
+                            }
+                            Toast.makeText(ctx, err ?: "已发送，感谢反馈", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    enabled = !sending,
+                ) {
+                    if (sending) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.height(16.dp),
+                            strokeWidth = 2.dp,
+                        )
+                    } else {
+                        Text("发送")
+                    }
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { reportOpen = false }, enabled = !sending) { Text("取消") }
+            },
+        )
+    }
 }
 
 /**
@@ -226,6 +306,7 @@ private fun SectionCard(
     ) {
         Column(Modifier.padding(contentPadding), content = content)
     }
+
 }
 
 /**

@@ -333,6 +333,40 @@ object Diag {
     fun export(ctx: Context, out: OutputStream) {
         flushRepeatsBeforeExport(ctx)
         out.write(buildHeader(ctx).toByteArray(Charsets.UTF_8))
+        forEachBlock(ctx) { out.write(it.toByteArray(Charsets.UTF_8)) }
+        out.flush()
+    }
+
+    /**
+     * 生成「发送诊断」用的文本：与导出同一套格式与二次脱敏，但只保留最近 [maxBytes] 字节。
+     *
+     * 只留最近的记录（超限时保留头部 + 尾部）：用户点发送时最关心刚发生的问题，
+     * 8MB 轮转文件原样上传既慢也没必要。头部含版本/设备/脱敏说明，必须保留。
+     */
+    fun buildReportText(ctx: Context, maxBytes: Int = 512 * 1024): String {
+        flushRepeatsBeforeExport(ctx)
+        val blocks = ArrayList<String>()
+        forEachBlock(ctx) { blocks += it }
+        val head = buildHeader(ctx)
+        val sb = StringBuilder(head)
+        // 从最新往回取，再按时间正序拼
+        val kept = ArrayList<String>()
+        var budget = maxBytes - head.toByteArray(Charsets.UTF_8).size - 64
+        for (b in blocks.asReversed()) {
+            val len = b.toByteArray(Charsets.UTF_8).size
+            if (len > budget) break
+            kept.add(b)
+            budget -= len
+        }
+        if (kept.size < blocks.size) {
+            sb.append("# （仅保留最近 ").append(kept.size).append(" 条，其余已省略）\n")
+        }
+        kept.asReversed().forEach { sb.append(it) }
+        return sb.toString()
+    }
+
+    /** 逐条产出与导出格式一致的块；HTTP/WebView 正文与事件 detail 都会再过一次 sanitize */
+    private fun forEachBlock(ctx: Context, emit: (String) -> Unit) {
         listOf(File(file(ctx).parentFile, ROTATED), file(ctx)).forEach { f ->
             if (!f.isFile) return@forEach
             f.forEachLine { line ->
@@ -352,7 +386,7 @@ object Diag {
                         append(sanitize(ctx, o.optString("detail")))
                         if (!endsWith("\n")) append('\n')
                     }
-                    out.write(block.toByteArray(Charsets.UTF_8))
+                    emit(block)
                     return@forEachLine
                 }
                 val url = sanitize(ctx, o.optString("url"))
@@ -369,10 +403,9 @@ object Diag {
                     append(body)
                     if (!endsWith("\n")) append('\n')
                 }
-                out.write(block.toByteArray(Charsets.UTF_8))
+                emit(block)
             }
         }
-        out.flush()
     }
 
     private fun buildHeader(ctx: Context): String = buildString {
