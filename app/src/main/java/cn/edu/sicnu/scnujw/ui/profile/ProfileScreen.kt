@@ -238,7 +238,7 @@ private fun ProfileFooter() {
         ) {
             scope.launch {
                 checking = true
-                val result = UpdateCenter.checkNow(ctx, manual = true)
+                val result = UpdateCenter.checkNow(ctx)
                 checking = false
                 val message = when (result) {
                     is UpdateCheck.Available -> null    // 弹窗由 UpdateHost 接管

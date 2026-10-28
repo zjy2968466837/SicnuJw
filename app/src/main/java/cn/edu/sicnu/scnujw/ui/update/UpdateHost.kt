@@ -47,7 +47,8 @@ import java.util.Locale
 /**
  * 更新网关：包在 `AppScaffold` 外面，弹窗因此能盖住任何页面（包括登录页）。
  *
- * 启动后等 1.5s 再检查，把首屏、会话探活、课表首拉的带宽先让出来；
+ * 每次进程启动等 1.5s 后自动检查一次（LaunchedEffect(Unit) 只跑一次），
+ * 不做跨启动的 24h 节流——当天第二次打开也能看到新版本；
  * 检查失败静默（只有「我的 → 检查更新」手动触发时才提示原因）。
  */
 @Composable
@@ -55,7 +56,7 @@ fun UpdateHost(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
     LaunchedEffect(Unit) {
         delay(1500)
-        UpdateCenter.checkNow(ctx, manual = false)
+        UpdateCenter.checkNow(ctx)
     }
     content()
     UpdateCenter.state?.let { UpdateDialog(it) }

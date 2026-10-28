@@ -44,8 +44,8 @@ object UpdateCenter {
         state = null
     }
 
-    suspend fun checkNow(ctx: Context, manual: Boolean): UpdateCheck {
-        val result = UpdateManager.check(ctx, manual)
+    suspend fun checkNow(ctx: Context): UpdateCheck {
+        val result = UpdateManager.check(ctx)
         if (result is UpdateCheck.Available) offer(result.info, result.force)
         return result
     }
