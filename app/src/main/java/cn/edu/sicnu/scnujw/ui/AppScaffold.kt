@@ -2,8 +2,8 @@ package cn.edu.sicnu.scnujw.ui
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assessment
 import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Grade
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material3.*
@@ -36,7 +36,9 @@ private data class Tab(val route: String, val label: String, val icon: ImageVect
 
 private val TABS = listOf(
     Tab("schedule", "课表", Icons.Filled.CalendarMonth),
-    Tab("scores", "成绩", Icons.Filled.Grade),
+    // 成绩用「报表」图标（文档+柱状图），别用 Grade——那颗五角星与成绩无关，
+    // 在底栏还会被误读成收藏/评分。
+    Tab("scores", "成绩", Icons.Filled.Assessment),
     Tab("exams", "考试", Icons.Filled.Schedule),
     Tab("profile", "我的", Icons.Filled.Person),
 )
