@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- FileProvider 可共享目录：只暴露更新包所在子目录，不暴露整个 cache -->
+<paths>
+    <cache-path name="updates" path="updates/" />
+</paths>

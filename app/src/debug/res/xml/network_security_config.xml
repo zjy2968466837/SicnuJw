@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  debug 专用覆盖（同名的 src/main 版本不参与 debug 构建）：允许明文，
+  便于用 `adb reverse tcp:8099 tcp:8099` + 本地 HTTP 服务联调更新清单。
+  release 仍走 src/main/res/xml/network_security_config.xml 的逐域放行。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

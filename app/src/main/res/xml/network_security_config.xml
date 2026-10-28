@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 教务主机仅 HTTP（202.115.194.60 / 遂宁课表），逐域放行明文；其余默认禁明文。
+     authserver.sicnu.edu.cn 在 SSO 重定向链中走 HTTP（302 跳到 http://authserver...），需放行。
+     凭据实际经 https 登录页传输，不受影响。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">202.115.194.60</domain>
+        <domain includeSubdomains="false">jwcxk.sicnu.edu.cn</domain>
+        <domain includeSubdomains="false">authserver.sicnu.edu.cn</domain>
+    </domain-config>
+</network-security-config>
