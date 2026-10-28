@@ -192,8 +192,9 @@ object UpdateManager {
      * 这就把「38 KB/s + 6 分钟单连接」从「一次抖动全废」变成可累积完成。
      *
      * 清单带 `ticketUrl` 时，**每次尝试前都重新取票**：票据只有 10 分钟有效期，
-     * 重试间隔可能跨过有效期；旧票据会 403，重新取票才能续传。
-     * 取票失败不回落未签名地址——否则票据闸门形同虚设（只剩 nginx 限流）。
+     * 重试间隔可能跨过有效期，旧票据会 403，重新取票才能续传。
+     * 取票失败退回清单里的直连地址：服务器默认不验签（旧版本永远能升级），
+     * 直连只是慢一点（无票限速 512 KB/s），不该因为票据服务抖动让更新彻底不可用。
      */
     suspend fun download(
         ctx: Context,
@@ -217,7 +218,15 @@ object UpdateManager {
         while (true) {
             attempt++
             try {
-                val downloadUrl = if (info.ticketUrl != null) fetchTicket(app, info) else info.url
+                val downloadUrl = if (info.ticketUrl != null) {
+                    runCatching { fetchTicket(app, info) }
+                        .getOrElse {
+                            Log.w(TAG, "取票失败，退回直连下载: ${it.javaClass.simpleName}")
+                            info.url
+                        }
+                } else {
+                    info.url
+                }
                 total = fetchInto(tmp, downloadUrl, total, onProgress)
                 if (total > 0L && tmp.length() != total) {
                     throw IOException("连接中断（${tmp.length()}/$total）")
@@ -253,8 +262,8 @@ object UpdateManager {
      *
      * 参数里只带匿名 deviceId（同一个安装稳定）与版本号/文件名；服务器据此
      * 按设备 6 次/小时、按 IP 12 次/分钟限额，并签发 `?exp=&sig=`。
-     * 网络错误 / 5xx / 429 抛 IOException（交给下载重试循环）；参数或响应异常抛
-     * UpdateException（重试无意义，直接给用户看原因）。
+     * 网络错误 / 5xx / 429 抛 IOException；参数或响应异常抛 UpdateException。
+     * 调用方对取票失败统一退回直连地址（见 [download]），不让更新因为票据服务不可用而失败。
      */
     private fun fetchTicket(app: Context, info: UpdateInfo): String {
         val base = info.ticketUrl ?: return info.url
