@@ -6,6 +6,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -18,7 +19,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation.NavController
 import cn.edu.sicnu.scnujw.core.diag.Diag
 import cn.edu.sicnu.scnujw.core.diag.DiagReport
-import cn.edu.sicnu.scnujw.core.stats.StatsReporter
 import cn.edu.sicnu.scnujw.ui.common.ScnuScreenHeader
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
 import cn.edu.sicnu.scnujw.ui.theme.ScnuTokens
@@ -58,7 +57,7 @@ import java.util.Locale
  *
  * 两个开关的默认值与理由：
  *  - 页面响应抓取 **默认开**（只写本机私有目录、写入/导出双重脱敏、不联网，用户可随时关）；
- *  - 使用统计 **默认开**（只上传学号前 4 位与匿名设备标识，见 [StatsReporter]）。
+ *  - 使用统计不占界面：设备首次初始化时自动上报一次（只传学号前 4 位 + 匿名设备号），见 [StatsReporter]。
  */
 @Composable
 fun DiagScreen(nav: NavController) {
@@ -66,7 +65,6 @@ fun DiagScreen(nav: NavController) {
     val cs = MaterialTheme.colorScheme
     val scope = rememberCoroutineScope()
     var capture by remember { mutableStateOf(Diag.isEnabled(ctx)) }
-    var statsOn by remember { mutableStateOf(StatsReporter.isEnabled(ctx)) }
     // stats() 要读文件数行数：不能在组合期算（主线程 IO），进页面时在 IO 线程取一次
     var stats by remember { mutableStateOf(Diag.Stats(0, 0, Diag.isEnabled(ctx), 0)) }
     LaunchedEffect(Unit) { stats = withContext(Dispatchers.IO) { Diag.stats(ctx) } }
@@ -103,8 +101,7 @@ fun DiagScreen(nav: NavController) {
                 .padding(ScnuSpacing.l),
             verticalArrangement = Arrangement.spacedBy(ScnuSpacing.l),
         ) {
-            // 卡 1：两个开关。内距交给行自己（横向 16 / 纵向 12），卡片不设内距——
-            // 分隔线两侧各 12dp 由两行提供，卡边与文字之间不再多垫一层 16dp。
+            // 卡 1：抓取开关。内距交给行自己（横向 16 / 纵向 12），卡片不设内距。
             SectionCard(contentPadding = PaddingValues(0.dp)) {
                 SwitchRow(
                     title = "记录页面响应",
@@ -120,23 +117,6 @@ fun DiagScreen(nav: NavController) {
                         }
                     },
                 )
-                HorizontalDivider(
-                    color = cs.outline.copy(alpha = ScnuTokens.OutlineAlpha),
-                    thickness = ScnuTokens.Hairline,
-                )
-                // 公开构建没有配置统计服务（APK 内不含自建地址），这一项直接不显示，
-                // 避免出现「开关打开但什么也不发」的假象
-                if (StatsReporter.isConfigured()) {
-                    SwitchRow(
-                        title = "参与使用统计",
-                        sub = "只上传学号前 4 位、匿名设备标识与版本信息；不含姓名/完整学号/成绩",
-                        checked = statsOn,
-                        onCheckedChange = { on ->
-                            statsOn = on
-                            StatsReporter.setEnabled(ctx, on)
-                        },
-                    )
-                }
             }
 
             SectionCard {
@@ -156,7 +136,23 @@ fun DiagScreen(nav: NavController) {
                     )
                 }
                 Spacer(Modifier.height(ScnuSpacing.m))
-                Row(horizontalArrangement = Arrangement.spacedBy(ScnuSpacing.s)) {
+                // 发送诊断与导出同款（Button），排在导出前面；窄屏时由 FlowRow 自动换行
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(ScnuSpacing.s),
+                    verticalArrangement = Arrangement.spacedBy(ScnuSpacing.s),
+                ) {
+                    if (DiagReport.isConfigured()) {
+                        Button(
+                            onClick = { reportOpen = true },
+                            enabled = !sending && stats.entries > 0,
+                            shape = MaterialTheme.shapes.small,
+                        ) {
+                            Text(
+                                if (sending) "发送中…" else "发送诊断",
+                                style = MaterialTheme.typography.labelMedium,
+                            )
+                        }
+                    }
                     Button(
                         onClick = {
                             val stamp = SimpleDateFormat("yyyyMMdd-HHmm", Locale.US).format(Date())
@@ -175,20 +171,6 @@ fun DiagScreen(nav: NavController) {
                         enabled = stats.entries > 0,
                         shape = MaterialTheme.shapes.small,
                     ) { Text("清空", style = MaterialTheme.typography.labelMedium) }
-                }
-                if (DiagReport.isConfigured()) {
-                    Spacer(Modifier.height(ScnuSpacing.s))
-                    OutlinedButton(
-                        onClick = { reportOpen = true },
-                        enabled = !sending && stats.entries > 0,
-                        shape = MaterialTheme.shapes.small,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            if (sending) "发送中…" else "发送诊断（附文字说明）",
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
                 }
             }
 

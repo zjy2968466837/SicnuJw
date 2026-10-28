@@ -14,8 +14,8 @@ android {
         applicationId = "cn.edu.sicnu.scnujw"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "1.9"
+        versionCode = 13
+        versionName = "1.11"
 
         // 应用内更新的清单地址：写在 local.properties（不入版本控制）或 -PupdateManifestUrl=…
         // 留空时整个功能关闭（不发任何更新请求）。命令行 -P 优先，方便本地联调。

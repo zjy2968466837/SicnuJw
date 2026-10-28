@@ -47,15 +47,17 @@ import java.util.concurrent.TimeUnit
  * - 服务端：落库前把两个标识换成 `HMAC-SHA256(服务端 pepper)`，数据库里没有原始标识。
  * - 不做客户端“应用层 AES”：客户端会开源，内嵌密钥等于公开，只会制造安全错觉。
  *
- * ## 开关
- * 「我的 → 诊断日志」页里有「参与使用统计」开关（默认开）；关闭后不再发送任何请求。
+ * ## 口径（2026-10-29 用户决定）
+ * 不提供开关：每个**设备**只在首次初始化时上报一次（学号前四位 + 匿名设备号），之后不再记录。
+ * 这只是停掉统计；该设备的诊断反馈（用户主动发送）不受影响。
  */
 object StatsReporter {
     private const val TAG = "Stats"
     private const val PREFS = "scnu_stats"
-    private const val KEY_STATS_ENABLED = "stats_enabled"
-    /** 每个学号前缀的「已成功上报」标记：true 即永久不再上报 */
-    private const val KEY_REPORTED = "reported_"
+    /** 该设备「已成功上报」标记：true 即永久不再上报 */
+    private const val KEY_REPORTED = "reported"
+    /** 旧版本按前缀记的标记（reported_2023…）：迁移时视为已上报，避免升级后再记一次 */
+    private const val KEY_REPORTED_PREFIX = "reported_"
     private const val SCHEMA = 1
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -79,37 +81,33 @@ object StatsReporter {
     /** 公开构建不配置 STATS_ENDPOINT：功能代码在，但不会发出任何请求 */
     fun isConfigured(): Boolean = BuildConfig.STATS_ENDPOINT.trim().startsWith("https://")
 
-    fun isEnabled(ctx: Context): Boolean =
-        isConfigured() && ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_STATS_ENABLED, true)
-
-    fun setEnabled(ctx: Context, enabled: Boolean) {
-        ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .edit().putBoolean(KEY_STATS_ENABLED, enabled).apply()
-    }
-
     /**
      * 账号身份确认时调用（`ScoreCache.onAccountKnown` 是唯一入口，
      * 登录成功、换票回填、学生卡加载都会经过它）。
      *
      * 这里只取 `take(4)`；`studentCode` 的其余部分不会离开这个函数。
-     * 该前缀若已成功上报过，直接返回——整个生命周期只报一次，不按时间重复。
+     * 该设备若已成功上报过，直接返回——整个生命周期只报一次，不按时间重复。
      */
     fun onAccountSeen(ctx: Context, studentCode: String) {
         val app = ctx.applicationContext
-        if (!isEnabled(app)) return
+        if (!isConfigured()) return
         val prefix = studentCode.trim().take(4)
         // 只接受 4 位数字（学号前缀）；否则直接放弃，不做任何兜底上传
         if (prefix.length != 4 || prefix.any { it !in '0'..'9' }) return
 
         scope.launch {
             // 进程内先抢占：同一次登录里并发的多次 onAccountKnown 只允许一个真的发出去
-            if (!inflight.add(prefix)) return@launch
+            if (!inflight.add("device")) return@launch
             try {
                 runCatching {
                     val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    // 已成功上报过的前缀永不再发；标记只在下面 post 成功后才写
-                    if (prefs.getBoolean(KEY_REPORTED + prefix, false)) return@runCatching
+                    // 该设备已上报过就永不再发；标记只在下面 post 成功后才写
+                    if (prefs.getBoolean(KEY_REPORTED, false)) return@runCatching
+                    // 迁移：旧版本按前缀记过标记 → 视为已上报，不改写、不重发
+                    if (prefs.all.any { (k, v) -> k.startsWith(KEY_REPORTED_PREFIX) && v == true }) {
+                        prefs.edit().putBoolean(KEY_REPORTED, true).apply()
+                        return@runCatching
+                    }
                     val endpoint = endpoint() ?: return@runCatching
                     val now = System.currentTimeMillis()
 
@@ -120,11 +118,11 @@ object StatsReporter {
 
                     val body = buildPayload(prefix, deviceId, accountRef, firstSeen.toLongOrNull() ?: now)
                     if (post(endpoint, body)) {
-                        prefs.edit().putBoolean(KEY_REPORTED + prefix, true).apply()
+                        prefs.edit().putBoolean(KEY_REPORTED, true).apply()
                     }
                 }.onFailure { Log.d(TAG, "统计上报未完成: ${it.javaClass.simpleName}") }
             } finally {
-                inflight.remove(prefix)
+                inflight.remove("device")
             }
         }
     }
