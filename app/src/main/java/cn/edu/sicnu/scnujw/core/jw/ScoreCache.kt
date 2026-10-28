@@ -326,10 +326,9 @@ object ScoreCache {
         fun norm(s: String) = s.filterNot { it.isWhitespace() }
         val key = term ?: "default"
         var cached = readElectPlans(ctx, key)
-        // term=null 指向服务端「选课结果页默认学期」，每学期都会变，且 Zxjhdm 只在学期内唯一：
-        // 默认学期按天刷新（不受成绩发布窗口限制），显式学期码仍走窗口策略。
-        val stale = if (term == null) needDailyRefresh(cached?.fetchedAt)
-        else cached == null || needAutoRefresh(cached.fetchedAt)
+        // 执行计划映射 7 天刷新一次（2026-10-29 用户决定）：
+        // term=null 指服务端默认学期，显式学期码同理；拉取失败继续用旧映射（见下方 catch）。
+        val stale = needWeeklyRefresh(cached?.fetchedAt)
         if (stale) {
             try {
                 val (html, sel) = JwClient.queryElectResult(term)
@@ -368,6 +367,8 @@ object ScoreCache {
 
     object Keys {
         const val ELECT_RESULT = "page_elect_result"
+        /** 选课结果的学期/来源筛选视图（默认视图仍用 [ELECT_RESULT]，保持旧缓存可用） */
+        const val ELECT_RESULT_VIEW = "page_elect_result_view_"
         const val EXAMS = "page_exams"
         const val PROGRESS = "page_progress"
         const val STUDENT_INFO = "page_student_info"
@@ -411,9 +412,36 @@ object ScoreCache {
     // 这样筛选视图再次进入/重新选择时先读缓存，不会因为「只缓存默认视图」而每次联网刷新。
 
     private const val EXAM_TERM_PREFIX = "page_exams_term_"
+    private const val PLAN_DETAIL_PREFIX = "plan_detail_"
 
     fun readExamTerm(ctx: Context, term: String): CachedPage? =
         readPage(ctx, EXAM_TERM_PREFIX + safeKey(term))
+
+    /**
+     * 执行计划详情缓存（按 term + 课程代码/课名，而不是按 Zxjhdm）：
+     * 映射拉取失败时仍能用缓存详情兜底，不需要先解析出 Zxjhdm。
+     */
+    fun readPlanDetail(ctx: Context, term: String?, courseKey: String): CachedPage? =
+        readPage(ctx, planDetailKey(term, courseKey))
+
+    fun writePlanDetail(ctx: Context, term: String?, courseKey: String, html: String) {
+        writePage(ctx, planDetailKey(term, courseKey), html)
+    }
+
+    internal fun planDetailKey(term: String?, courseKey: String): String =
+        PLAN_DETAIL_PREFIX + safeKey(term ?: "-1") + "_" + safeKey(courseKey)
+
+    /** 选课结果筛选视图的缓存键：term 与 src 都可能为 null（表示「全部」） */
+    fun readElectResultView(ctx: Context, term: String?, src: String?): CachedPage? =
+        readPage(ctx, electResultViewKey(term, src))
+
+    fun writeElectResultView(ctx: Context, term: String?, src: String?, html: String) {
+        writePage(ctx, electResultViewKey(term, src), html)
+    }
+
+    /** 选课结果筛选视图的缓存键：null 统一记为 "-1"（全部），保证「全部」只有一个家 */
+    internal fun electResultViewKey(term: String?, src: String?): String =
+        Keys.ELECT_RESULT_VIEW + safeKey(term ?: "-1") + "_" + safeKey(src ?: "-1")
 
     fun writeExamTerm(ctx: Context, term: String, html: String, label: String?) {
         writePage(ctx, EXAM_TERM_PREFIX + safeKey(term), html, term, label)

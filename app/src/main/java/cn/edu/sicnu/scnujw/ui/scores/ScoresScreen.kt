@@ -57,6 +57,7 @@ import cn.edu.sicnu.scnujw.ui.common.fmtCredit
 import cn.edu.sicnu.scnujw.ui.theme.NumMedium
 import cn.edu.sicnu.scnujw.ui.theme.NumSmall
 import cn.edu.sicnu.scnujw.ui.theme.ScnuPalette
+import cn.edu.sicnu.scnujw.ui.common.ScnuResumeRefresh
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
 import cn.edu.sicnu.scnujw.ui.theme.ScnuTokens
 import cn.edu.sicnu.scnujw.ui.theme.scnuSegmentedButtonColors
@@ -248,6 +249,8 @@ private fun ElectScorePage(
 ) {
     val ctx = LocalContext.current
     LaunchedEffect(Unit) { if (!vm.loaded) vm.load(ctx) }
+    // 回到前台且缓存不是今天时静默复检（页面自己的 load 会判断是否联网）
+    ScnuResumeRefresh { if (vm.loaded) vm.load(ctx) }
 
     // ── 筛选：学期（默认全部）+ 只看需重修（状态在 ScoresScreen 层，切 tab 不丢）──
     var menuOpen by remember { mutableStateOf(false) }

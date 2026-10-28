@@ -54,6 +54,7 @@ import cn.edu.sicnu.scnujw.ui.common.issueCopy
 import cn.edu.sicnu.scnujw.ui.theme.NumLarge
 import cn.edu.sicnu.scnujw.ui.theme.NumMedium
 import cn.edu.sicnu.scnujw.ui.theme.NumSmall
+import cn.edu.sicnu.scnujw.ui.common.ScnuResumeRefresh
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
 import cn.edu.sicnu.scnujw.ui.theme.ScnuTokens
 import kotlinx.coroutines.Dispatchers
@@ -95,9 +96,9 @@ class ProgressViewModel : ViewModel() {
             )
             if (cached != null) {
                 val p = ProgressParser.parse(cached.html)
-                if (p.categories.isNotEmpty()) {
-                    applyResult(p, cn.edu.sicnu.scnujw.core.jw.ScoreCache.dailyLabel(cached.fetchedAt))
-                }
+                // 空分类也是合法空态（新生/培养方案未下发）：同样要上屏，
+                // 否则当天再进入会卡在「正在读取学习进度」且没有刷新入口（2026-10-29 修）。
+                applyResult(p, cn.edu.sicnu.scnujw.core.jw.ScoreCache.dailyLabel(cached.fetchedAt))
                 if (!force && !cn.edu.sicnu.scnujw.core.jw.ScoreCache.needDailyRefresh(cached.fetchedAt)) {
                     return@launch
                 }
@@ -155,6 +156,8 @@ fun ProgressScreen(
 ) {
     val ctx = LocalContext.current
     LaunchedEffect(Unit) { if (!vm.loaded && vm.error == null) vm.load(ctx) }
+    // 回到前台且缓存不是今天时静默复检（页面自己的 load 会判断是否联网）
+    ScnuResumeRefresh { if (vm.loaded) vm.load(ctx) }
     val p = vm.progress
     val cs = MaterialTheme.colorScheme
 

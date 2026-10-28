@@ -45,6 +45,7 @@ import cn.edu.sicnu.scnujw.ui.theme.BadgeShape
 import cn.edu.sicnu.scnujw.ui.theme.NumLarge
 import cn.edu.sicnu.scnujw.ui.theme.NumMedium
 import cn.edu.sicnu.scnujw.ui.theme.NumSmall
+import cn.edu.sicnu.scnujw.ui.common.ScnuResumeRefresh
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
 import cn.edu.sicnu.scnujw.ui.theme.ScnuTokens
 import kotlinx.coroutines.CancellationException
@@ -107,7 +108,7 @@ class ExamsViewModel : ViewModel() {
         loadJob = viewModelScope.launch(Dispatchers.IO) {
             grade = cn.edu.sicnu.scnujw.core.jw.ScoreCache.enrollmentYear(ctx)
             // 默认视图读 page_exams.json；筛选视图读 page_exams_term_<学期>.json。
-            // 两者都先上屏；!force 时直接返回，筛选视图不会因切学期而每次联网刷新。
+            // 两者都先上屏；每个视图各自按「缓存是不是今天」决定是否联网（一天一次）。
             val cached: cn.edu.sicnu.scnujw.core.jw.ScoreCache.CachedPage? =
                 if (term == null) {
                     cn.edu.sicnu.scnujw.core.jw.ScoreCache.readPage(
@@ -123,9 +124,11 @@ class ExamsViewModel : ViewModel() {
                     cn.edu.sicnu.scnujw.core.jw.ScoreCache.dailyLabel(cached.fetchedAt),
                     recordDefault = term == null,
                 )
-                // 有缓存 = 缓存态：进入页面/切到该学期都不自动联网，缓存跨天也不刷；
-                // 只有完全无缓存的初次加载或角标手动 force=true 才请求。
-                if (!force) return@launch
+                // 缓存先行：当天已拉过就直接用；跨天（或手动 force）再联网一次。
+                // 2026-10-29 用户决定：考试安排与其他页统一为「按天刷新」。
+                if (!force && !cn.edu.sicnu.scnujw.core.jw.ScoreCache.needDailyRefresh(cached.fetchedAt)) {
+                    return@launch
+                }
             }
             if (gen != loadGen) return@launch
             refreshing = true
@@ -251,6 +254,8 @@ fun ExamsScreen(
     val ctx = LocalContext.current
     // 其余四页同款守卫：切回 tab 时不重置用户已选学期，也不重发整页请求
     LaunchedEffect(Unit) { if (!vm.loaded) vm.load(ctx) }
+    // 回到前台且缓存不是今天时静默复检（页面自己的 load 会判断是否联网）
+    ScnuResumeRefresh { if (vm.loaded) vm.load(ctx, vm.pendingTerm) }
     // 每 30 秒推进一次「当前时间」：倒计时数字与「待考/已结束」分组跨过开考/结束时刻会自动翻转
     var tick by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) {

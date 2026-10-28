@@ -13,6 +13,7 @@ import cn.edu.sicnu.scnujw.core.jw.JwClient
 import cn.edu.sicnu.scnujw.core.jw.PlanDetail
 import cn.edu.sicnu.scnujw.core.jw.PlanDetailParser
 import cn.edu.sicnu.scnujw.core.jw.ScoreCache
+import org.jsoup.Jsoup
 import cn.edu.sicnu.scnujw.ui.common.ScnuStatePanel
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
 import cn.edu.sicnu.scnujw.ui.theme.ScnuTokens
@@ -44,6 +45,17 @@ fun CourseDetailSheet(
     LaunchedEffect(attempt) {
         loading = true
         error = null
+        // 缓存键与 Zxjhdm 无关：即使映射刷新失败/课程被撤，也能用上一次的详情兜底。
+        val courseKey = courseCode.ifBlank { courseName }
+        // 1) 先上屏缓存（有的话），用户不必等网络
+        val cached = runCatching { ScoreCache.readPlanDetail(ctx, term, courseKey) }.getOrNull()
+        if (cached != null) {
+            val p = runCatching { PlanDetailParser.parse(Jsoup.parse(cached.html)) }.getOrNull()
+            if (p != null && (p.info.isNotEmpty() || p.textbooks.isNotEmpty())) {
+                detail = p
+                loading = false
+            }
+        }
         try {
             val zx = ScoreCache.findZxjhdm(ctx, term, courseCode, courseName)
                 ?: throw IllegalStateException(
@@ -52,16 +64,22 @@ fun CourseDetailSheet(
             val doc = JwClient.fetchPlanDetail(zx)
             val p = PlanDetailParser.parse(doc)
             if (p.info.isEmpty() && p.textbooks.isEmpty()) {
+                // 更新拿到了空页面：不覆盖缓存，有缓存就继续用
                 throw IllegalStateException("执行计划页暂无可展示内容")
             }
+            ScoreCache.writePlanDetail(ctx, term, courseKey, doc.html())
             detail = p
+            error = null
         } catch (e: Exception) {
             // 面向用户的文案不直接透出异常原文；技术细节只进日志
             android.util.Log.w("CourseDetail", "执行计划加载失败: ${e.javaClass.simpleName}: ${e.message}")
-            error = if (e is IllegalStateException && !e.message.isNullOrBlank()) {
-                e.message
-            } else {
-                "执行计划页暂时读不到，可能是网络或登录状态的问题。"
+            // 有缓存就静默降级（保留缓存内容），无缓存才显示错误面板
+            if (detail == null) {
+                error = if (e is IllegalStateException && !e.message.isNullOrBlank()) {
+                    e.message
+                } else {
+                    "执行计划页暂时读不到，可能是网络或登录状态的问题。"
+                }
             }
         } finally {
             loading = false

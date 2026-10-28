@@ -49,6 +49,7 @@ import cn.edu.sicnu.scnujw.ui.common.fmtCredit
 import cn.edu.sicnu.scnujw.ui.common.issueCopy
 import cn.edu.sicnu.scnujw.ui.theme.BadgeShape
 import cn.edu.sicnu.scnujw.ui.theme.NumMedium
+import cn.edu.sicnu.scnujw.ui.common.ScnuResumeRefresh
 import cn.edu.sicnu.scnujw.ui.theme.ScnuSpacing
 import cn.edu.sicnu.scnujw.ui.theme.ScnuTokens
 import kotlinx.coroutines.Dispatchers
@@ -114,22 +115,27 @@ class ElectResultViewModel : ViewModel() {
         issue = null
         notice = null
         loadJob = viewModelScope.launch(Dispatchers.IO) {
-            var cached: cn.edu.sicnu.scnujw.core.jw.ScoreCache.CachedPage? = null
-            if (term == null && src == null) {
-                cached = cn.edu.sicnu.scnujw.core.jw.ScoreCache.readPage(
-                    ctx, cn.edu.sicnu.scnujw.core.jw.ScoreCache.Keys.ELECT_RESULT
-                )
-                if (cached != null) {
-                    if (gen != loadGen) return@launch
-                    val page = ElectResultParser.parse(cached.html)
-                    apply(
-                        page, page.selectedTerm, page.selectedSource,
-                        cn.edu.sicnu.scnujw.core.jw.ScoreCache.dailyLabel(cached.fetchedAt),
+            // 默认视图沿用 page_elect_result.json；学期/来源筛选视图各自一份缓存
+            // （键含 term+src，切回看过的组合不再联网）。两者都先上屏，再按天判断是否刷新。
+            val cached: cn.edu.sicnu.scnujw.core.jw.ScoreCache.CachedPage? =
+                if (term == null && src == null) {
+                    cn.edu.sicnu.scnujw.core.jw.ScoreCache.readPage(
+                        ctx, cn.edu.sicnu.scnujw.core.jw.ScoreCache.Keys.ELECT_RESULT
                     )
-                    if (!force && !cn.edu.sicnu.scnujw.core.jw.ScoreCache.needDailyRefresh(cached.fetchedAt)) {
-                        if (gen == loadGen) loading = false
-                        return@launch
-                    }
+                } else {
+                    cn.edu.sicnu.scnujw.core.jw.ScoreCache.readElectResultView(ctx, term, src)
+                }
+            if (cached != null) {
+                if (gen != loadGen) return@launch
+                val page = ElectResultParser.parse(cached.html)
+                val shown = filterBySource(page, src)
+                apply(
+                    shown, page.selectedTerm, page.selectedSource,
+                    cn.edu.sicnu.scnujw.core.jw.ScoreCache.dailyLabel(cached.fetchedAt),
+                )
+                if (!force && !cn.edu.sicnu.scnujw.core.jw.ScoreCache.needDailyRefresh(cached.fetchedAt)) {
+                    if (gen == loadGen) loading = false
+                    return@launch
                 }
             }
             try {
@@ -139,6 +145,8 @@ class ElectResultViewModel : ViewModel() {
                     cn.edu.sicnu.scnujw.core.jw.ScoreCache.writePage(
                         ctx, cn.edu.sicnu.scnujw.core.jw.ScoreCache.Keys.ELECT_RESULT, html
                     )
+                } else {
+                    cn.edu.sicnu.scnujw.core.jw.ScoreCache.writeElectResultView(ctx, term, src, html)
                 }
                 val page = ElectResultParser.parse(html)
                 // 服务端偶发不回发「来源」筛选（下拉已选中但表仍是全部行，2026-10-27 实测）；
@@ -198,6 +206,8 @@ fun ElectResultScreen(
 ) {
     val ctx = LocalContext.current
     LaunchedEffect(Unit) { if (!vm.loaded) vm.load(ctx) }
+    // 回到前台且缓存不是今天时静默复检（页面自己的 load 会判断是否联网）
+    ScnuResumeRefresh { if (vm.loaded) vm.load(ctx, vm.currentTerm, vm.currentSource) }
 
     var termMenu by remember { mutableStateOf(false) }
     var sourceMenu by remember { mutableStateOf(false) }
@@ -223,7 +233,7 @@ fun ElectResultScreen(
                         source = vm.source,
                         refreshing = vm.loading,
                         success = vm.lastRefreshOk == true,
-                        onRefresh = { vm.load(ctx, force = true) },
+                        onRefresh = { vm.load(ctx, vm.currentTerm, vm.currentSource, force = true) },
                     )
                 }
             },

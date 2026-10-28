@@ -125,7 +125,9 @@ class ProfileViewModel : ViewModel() {
                         "学生信息缓存归属不符（缓存学号=${info.sno} 当前学号=$owner），忽略缓存",
                     )
                 }
-                if (cachedShown && !force && !ScoreCache.needDailyRefresh(cached.fetchedAt)) return@launch
+                // 2026-10-29 用户决定：学生信息卡一次加载后长期使用缓存，不再按天联网。
+                // 换号登录会 clearAll，所以归属校验通过就足够安全；只有无缓存时才走在线。
+                if (cachedShown && !force) return@launch
             }
 
             // 2) 在线：学生首页无信息卡时由 fetchStudentIndex 内部回退到卡片页
@@ -602,8 +604,6 @@ private fun StudentPhoto(url: String?, owner: String?, modifier: Modifier = Modi
 private data class FeatureEntry(val label: String, val sub: String, val icon: ImageVector, val route: String)
 
 private val FEATURES = buildList {
-    add(FeatureEntry("平时成绩", "各课平时分构成明细", Icons.Filled.Grade, "scores?tab=usual"))
-    add(FeatureEntry("考试安排", "日期 / 考场 / 座位号 / 倒计时", Icons.Filled.EventNote, "exams"))
     add(FeatureEntry("学习进度", "各类学分 已修 / 应修", Icons.Filled.School, "progress"))
     add(FeatureEntry("选课结果", "本学期选中课程明细", Icons.Filled.Checklist, "elect"))
     add(FeatureEntry("空闲教室", "按时间/地点查空教室", Icons.Filled.Schedule, "roomfree"))
