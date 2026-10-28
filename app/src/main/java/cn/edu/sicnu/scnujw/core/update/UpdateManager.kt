@@ -10,13 +10,16 @@ import android.provider.Settings
 import android.util.Log
 import androidx.core.content.FileProvider
 import cn.edu.sicnu.scnujw.BuildConfig
+import cn.edu.sicnu.scnujw.core.identity.DeviceIdentity
 import cn.edu.sicnu.scnujw.core.net.NetFailure
 import cn.edu.sicnu.scnujw.core.net.classifyNetworkFailure
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
 import java.io.IOException
@@ -187,6 +190,10 @@ object UpdateManager {
      * 支持断点续传：中断后（国际线路跑十几 MB 常常被 RST）保留 `.part`，
      * 下一次用 `Range: bytes=N-` 从断点接着下，最多重试 [MAX_ATTEMPTS] 次。
      * 这就把「38 KB/s + 6 分钟单连接」从「一次抖动全废」变成可累积完成。
+     *
+     * 清单带 `ticketUrl` 时，**每次尝试前都重新取票**：票据只有 10 分钟有效期，
+     * 重试间隔可能跨过有效期；旧票据会 403，重新取票才能续传。
+     * 取票失败不回落未签名地址——否则票据闸门形同虚设（只剩 nginx 限流）。
      */
     suspend fun download(
         ctx: Context,
@@ -210,7 +217,8 @@ object UpdateManager {
         while (true) {
             attempt++
             try {
-                total = fetchInto(tmp, info.url, total, onProgress)
+                val downloadUrl = if (info.ticketUrl != null) fetchTicket(app, info) else info.url
+                total = fetchInto(tmp, downloadUrl, total, onProgress)
                 if (total > 0L && tmp.length() != total) {
                     throw IOException("连接中断（${tmp.length()}/$total）")
                 }
@@ -238,6 +246,38 @@ object UpdateManager {
         }
         // while(true) 里每条路径都 return 或 throw，这行只为满足类型检查
         throw UpdateException("下载失败")
+    }
+
+    /**
+     * 向服务器换一个短时效签名下载地址。
+     *
+     * 参数里只带匿名 deviceId（同一个安装稳定）与版本号/文件名；服务器据此
+     * 按设备 6 次/小时、按 IP 12 次/分钟限额，并签发 `?exp=&sig=`。
+     * 网络错误 / 5xx / 429 抛 IOException（交给下载重试循环）；参数或响应异常抛
+     * UpdateException（重试无意义，直接给用户看原因）。
+     */
+    private fun fetchTicket(app: Context, info: UpdateInfo): String {
+        val base = info.ticketUrl ?: return info.url
+        val file = info.url.substringAfterLast('/').substringBefore('?').ifBlank {
+            "SicnuJw-${info.versionCode}.apk"
+        }
+        val httpUrl = base.toHttpUrlOrNull()?.newBuilder()
+            ?.addQueryParameter("device", DeviceIdentity.deviceId(app))
+            ?.addQueryParameter("version", info.versionCode.toString())
+            ?.addQueryParameter("file", file)
+            ?.build() ?: throw UpdateException("更新票据地址无效")
+        val request = Request.Builder()
+            .url(httpUrl)
+            .header("Cache-Control", "no-cache")
+            .header("Accept", "application/json")
+            .build()
+        client.newCall(request).execute().use { resp ->
+            if (!resp.isSuccessful) throw IOException("取票失败 HTTP ${resp.code}")
+            val body = resp.body?.string().orEmpty()
+            val url = runCatching { JSONObject(body).optString("url").trim() }.getOrNull().orEmpty()
+            if (!url.startsWith("https://")) throw UpdateException("服务器返回的下载地址无效")
+            return url
+        }
     }
 
     /** 单次请求：按已有字节数决定是否带 Range；返回文件总长度（未知时返回 0） */

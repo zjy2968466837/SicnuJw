@@ -14,8 +14,8 @@ android {
         applicationId = "cn.edu.sicnu.scnujw"
         minSdk = 26
         targetSdk = 36
-        versionCode = 9
-        versionName = "1.7"
+        versionCode = 10
+        versionName = "1.8"
 
         // 应用内更新的清单地址：写在 local.properties（不入版本控制）或 -PupdateManifestUrl=…
         // 留空时整个功能关闭（不发任何更新请求）。命令行 -P 优先，方便本地联调。
@@ -82,4 +82,7 @@ dependencies {
     debugImplementation(libs.androidx.compose.ui.tooling)
     // 脱敏/黑名单等纯逻辑用 JVM 单测兜住（不影响 APK）
     testImplementation("junit:junit:4.13.2")
+    // 本地 JVM 单测里的 android.jar org.json 是空壳（方法调用即抛 not mocked）。
+    // 用真实的 org.json 实现让清单解析可测；仅测试类路径，不进 APK。
+    testImplementation("org.json:json:20240303")
 }

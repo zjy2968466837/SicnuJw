@@ -20,9 +20,13 @@ import org.json.JSONObject
  *   "size": 14474272,
  *   "notes": ["修复…", "新增…"],
  *   "force": false,
- *   "minSupportedVersionCode": 0
+ *   "minSupportedVersionCode": 0,
+ *   "ticketUrl": "https://host/v1/update-ticket"
  * }
  * ```
+ *
+ * `ticketUrl`（可选）：存在时下载前先向它取一个短时效签名 URL，再用返回的 url 下载。
+ * 服务器据此按设备/IP 限额并拒绝盗链；缺失时退回直接下载（兼容旧部署/GitHub 镜像）。
  */
 data class UpdateInfo(
     val versionCode: Long,
@@ -33,6 +37,8 @@ data class UpdateInfo(
     val notes: List<String>,
     val force: Boolean,
     val minSupportedVersionCode: Long,
+    /** 取票端点；null = 直接下载 `url`（旧部署或人工镜像） */
+    val ticketUrl: String? = null,
 ) {
     companion object {
         /** 清单体上限：正常不到 1KB，超过这个尺寸按异常处理（不把大块文本读进内存） */
@@ -55,6 +61,8 @@ data class UpdateInfo(
                 notes = notesOf(o),
                 force = o.optBoolean("force", false),
                 minSupportedVersionCode = o.optLong("minSupportedVersionCode", 0L),
+                ticketUrl = o.optString("ticketUrl").trim()
+                    .takeIf { it.startsWith("https://") || it.startsWith("http://") },
             )
         }
 
