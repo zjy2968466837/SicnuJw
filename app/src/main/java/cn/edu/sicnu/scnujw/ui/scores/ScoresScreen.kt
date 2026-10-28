@@ -156,6 +156,11 @@ class ScoresViewModel : ViewModel() {
                     }
                     // 页面骨架都不存在 = 结构异常/半渲染，不能伪装成「没有查到成绩记录」
                     else -> {
+                        // 诊断事件：只写页面路径与结论，HTML 由 JwClient 的 http 记录负责
+                        cn.edu.sicnu.scnujw.core.diag.Diag.recordEvent(
+                            "parse",
+                            "选课成绩页结构异常：找不到成绩表（${JwClient.ELECT_SCORE}）",
+                        )
                         error = "成绩页结构异常（找不到成绩表），本次结果未保存。请稍后重试。"
                         lastRefreshOk = false
                         if (cached == null) issue = DataIssue.SERVER

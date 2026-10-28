@@ -3,6 +3,7 @@ package cn.edu.sicnu.scnujw.core.jw
 import android.content.Context
 import android.os.SystemClock
 import android.util.Log
+import cn.edu.sicnu.scnujw.core.diag.Diag
 import cn.edu.sicnu.scnujw.core.net.JwTraffic
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
@@ -88,6 +89,11 @@ object UsualRepository {
                 doc = JwClient.getUsualPage()
                 val page = UsualScoreParser.parse(doc.html())
                 if (!UsualScoreParser.hasUsualPage(doc.html())) {
+                    // 解析事件：页面路径 + 结论，不记 HTML（HTML 由 JwClient 的 http 记录负责）
+                    Diag.recordEvent(
+                        "parse",
+                        "${JwClient.USUAL_SCORE} 首个学期页结构异常：找不到学期下拉与课程块",
+                    )
                     throw IllegalStateException("平时成绩页结构异常（找不到学期下拉与课程块）")
                 }
                 termMap = page.termMap
@@ -176,11 +182,17 @@ object UsualRepository {
                 val next = JwClient.postUsualTerm(docForNext, term)
                 val page = UsualScoreParser.parse(next.html())
                 if (page.selectedTerm != term) {
+                    Diag.recordEvent(
+                        "parse",
+                        "${JwClient.USUAL_SCORE} 回发学期不符：返回=" +
+                            "${page.selectedTerm.ifBlank { "无" }} 期望=$term",
+                    )
                     throw IllegalStateException(
                         "返回页学期=${page.selectedTerm.ifBlank { "无" }}，期望=$term"
                     )
                 }
                 if (!UsualScoreParser.hasUsualPage(next.html())) {
+                    Diag.recordEvent("parse", "${JwClient.USUAL_SCORE} 学期 $term 页面结构异常")
                     throw IllegalStateException("学期 $term 页面结构异常")
                 }
                 if (!beforeWrite()) return@withLock null

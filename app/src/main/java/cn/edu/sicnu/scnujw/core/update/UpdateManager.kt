@@ -46,12 +46,21 @@ class UpdateException(message: String, cause: Throwable? = null) : Exception(mes
  *  - 使用**独立 OkHttpClient（无 CookieJar）**：教务 Cookie / CASTGC 绝不会随请求发到更新主机；
  *  - 清单请求 `no-cache`，不落 HTTP 缓存，避免读到过期版本号。
  *
- * 刷新节流：成功后 24h 内不再自动检查，失败后 1h 再试；手动检查（`forceCheck=true`）不受限。
+ * 刷新节流：成功后 24h 内不再自动检查，失败后 1h 再试。节流只作用于**自动检查**；
+ * 手动检查（`forceCheck=true`）既不读也不写这个时间戳——用户主动点「检查更新」
+ * 不该影响下次启动的自动提示。
  */
 object UpdateManager {
     private const val TAG = "Update"
     private const val PREFS = "scnu_update"
-    private const val KEY_NEXT_CHECK_AT = "next_check_at"
+    /**
+     * 自动检查的下次允许时间。只有自动检查会写它，手动检查（forceCheck）绝不写。
+     *
+     * 值从 `next_check_at` 改名为 `auto_check_at`：旧版手动检查成功也会写这个时间戳，
+     * 真机 1.1 就是被一次手动检查压住了启动后的自动检查（24h 内不再弹更新）。
+     * 换名字让已经中招的设备升级后立即恢复自动提示，不必等旧的 24h 过期。
+     */
+    private const val KEY_AUTO_CHECK_AT = "auto_check_at"
     private const val OK_INTERVAL_MS = 24 * 60 * 60 * 1000L
     private const val RETRY_INTERVAL_MS = 60 * 60 * 1000L
     private const val DIR = "updates"
@@ -113,15 +122,20 @@ object UpdateManager {
         if (urls.isEmpty()) return UpdateCheck.Disabled
         val app = ctx.applicationContext
         val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-        if (!forceCheck && System.currentTimeMillis() < prefs.getLong(KEY_NEXT_CHECK_AT, 0L)) {
+        // 节流只挡自动检查；手动检查（forceCheck）必须真正请求一次
+        if (!forceCheck && System.currentTimeMillis() < prefs.getLong(KEY_AUTO_CHECK_AT, 0L)) {
             return UpdateCheck.UpToDate
         }
 
         return try {
             val info = withContext(Dispatchers.IO) { fetchFirst(urls) }
-            prefs.edit()
-                .putLong(KEY_NEXT_CHECK_AT, System.currentTimeMillis() + OK_INTERVAL_MS)
-                .apply()
+            // 手动检查成功不写节流时间戳：否则用户点一次「检查更新」，紧接着的
+            // 每次启动自动检查都被压住 24h，新版本反而不再主动弹窗
+            if (!forceCheck) {
+                prefs.edit()
+                    .putLong(KEY_AUTO_CHECK_AT, System.currentTimeMillis() + OK_INTERVAL_MS)
+                    .apply()
+            }
             if (info.versionCode > localVersionCode()) {
                 val force = info.force ||
                     info.minSupportedVersionCode in 1..localVersionCode()
@@ -131,9 +145,12 @@ object UpdateManager {
             }
         } catch (e: Exception) {
             Log.w(TAG, "检查更新失败: ${e.javaClass.simpleName}: ${e.message}")
-            prefs.edit()
-                .putLong(KEY_NEXT_CHECK_AT, System.currentTimeMillis() + RETRY_INTERVAL_MS)
-                .apply()
+            // 失败重试同样只记给自动检查：手动失败不该顺带压制启动时的自动检查
+            if (!forceCheck) {
+                prefs.edit()
+                    .putLong(KEY_AUTO_CHECK_AT, System.currentTimeMillis() + RETRY_INTERVAL_MS)
+                    .apply()
+            }
             UpdateCheck.Failed(e)
         }
     }

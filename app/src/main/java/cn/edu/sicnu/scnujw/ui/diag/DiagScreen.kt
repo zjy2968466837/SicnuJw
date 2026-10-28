@@ -52,8 +52,8 @@ import java.util.Locale
 /**
  * 诊断日志页：开关页面抓取、查看已捕获体积、导出成文本。
  *
- * 两个开关都默认关/开明确：
- *  - 页面响应抓取 **默认关**（开源仓库不默认记录任何页面内容）；
+ * 两个开关的默认值与理由：
+ *  - 页面响应抓取 **默认开**（只写本机私有目录、写入/导出双重脱敏、不联网，用户可随时关）；
  *  - 使用统计 **默认开**（只上传学号前 4 位与匿名设备标识，见 [StatsReporter]）。
  */
 @Composable
@@ -101,9 +101,11 @@ fun DiagScreen(nav: NavController) {
             SectionCard(contentPadding = PaddingValues(0.dp)) {
                 SwitchRow(
                     title = "记录页面响应",
-                    sub = "记录教务接口与 WebView 返回的原始页面，用于排查解析问题",
+                    sub = "默认开启：记录教务接口与 WebView 返回的原始页面（只存本机，导出时脱敏），" +
+                        "用于排查解析问题；不需要可以关掉",
                     checked = capture,
                     onCheckedChange = { on ->
+                        // 默认就是开的，所以「首次进入」不需要确认；只有用户从关切回开时再问一次
                         if (on && !capture) confirmCapture = true
                         else {
                             capture = on
@@ -169,10 +171,11 @@ fun DiagScreen(nav: NavController) {
                 }
             }
 
-            // 说明只留两条最关键的事实；脱敏细则以 PRIVACY.md 与 Diag 的脱敏实现为准，
+            // 说明只留最关键的事实；脱敏细则以 PRIVACY.md 与 Diag 的脱敏实现为准，
             // 不再在页面底部铺一段 4 行清单（UI_DESIGN 3.9.2）。
             Text(
-                "导出文本已自动脱敏（学号、姓名、登录凭据）；页面里仍可能有课程名等校内信息，分享前请自行确认。",
+                "记录默认开启，只写本机应用私有目录、不联网；不需要时可用上方开关关闭。" +
+                    "导出文本已自动脱敏（学号、姓名、登录凭据）；页面里仍可能有课程名等校内信息，分享前请自行确认。",
                 style = MaterialTheme.typography.labelSmall,
                 color = cs.onSurfaceVariant,
             )
@@ -180,13 +183,14 @@ fun DiagScreen(nav: NavController) {
     }
 
     if (confirmCapture) {
+        // 只在你主动从「关」切回「开」时出现；默认开启状态下进页面不会打扰
         AlertDialog(
             onDismissRequest = { confirmCapture = false },
-            title = { Text("开始记录页面内容？") },
+            title = { Text("重新开始记录页面内容？") },
             text = {
                 Text(
-                    "开启后会把你访问的教务页面原文写入应用私有目录（本机，不上传），用于定位解析问题。" +
-                        "导出时自动脱敏，但请只在需要反馈问题时开启，反馈完可以在这里清空。",
+                    "开启后会把你访问的教务页面原文写入应用私有目录（本机，不上传，导出时自动脱敏），" +
+                        "用于定位解析问题。反馈完可以在这里清空，或再次关闭。",
                 )
             },
             confirmButton = {

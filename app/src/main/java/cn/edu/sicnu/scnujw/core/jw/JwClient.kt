@@ -85,6 +85,13 @@ object JwClient {
                 cont.invokeOnCancellation { runCatching { call.cancel() } }
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
+                        // 诊断事件：只记 host+path 与异常类名。URL 不带 query（sid 在 query 里），
+                        // 异常消息里若回显了 URL，由 Diag 的脱敏兜底。
+                        cn.edu.sicnu.scnujw.core.diag.Diag.recordEvent(
+                            "net",
+                            "${request.url.host}${request.url.encodedPath}" +
+                                "（${e.javaClass.simpleName}: ${e.message.orEmpty()}）",
+                        )
                         if (cont.isActive) cont.resumeWithException(e)
                     }
 
@@ -96,7 +103,7 @@ object JwClient {
                                 if (cont.isActive) cont.resumeWithException(e)
                                 return
                             }
-                            // 诊断日志：记录解析器实际拿到的原始响应（默认关闭，脱敏见 Diag）
+                            // 诊断日志：记录解析器实际拿到的原始响应（默认开启，只落本机，脱敏见 Diag）
                             cn.edu.sicnu.scnujw.core.diag.Diag.recordHttp(
                                 url = request.url.toString(),
                                 status = r.code,

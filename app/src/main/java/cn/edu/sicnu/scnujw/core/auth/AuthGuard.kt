@@ -2,6 +2,7 @@ package cn.edu.sicnu.scnujw.core.auth
 
 import android.content.Context
 import android.util.Log
+import cn.edu.sicnu.scnujw.core.diag.Diag
 import cn.edu.sicnu.scnujw.core.net.SessionManager
 import cn.edu.sicnu.scnujw.core.zhxg.HolidayParser
 import kotlinx.coroutines.CancellationException
@@ -233,6 +234,8 @@ object AuthGuard {
                     if (ok) {
                         SessionRegistry.markAlive(system)
                         refreshIdentity(system)
+                        // 诊断事件：只记系统名与结果，不写账号/票据（脱敏在 Diag 内兜底）
+                        Diag.recordEvent("auth", "${system.label} 静默换票成功")
                     } else {
                         // 换票后仍验不到不一定是会话失效（也可能是并发请求占住会话锁/网络抖动）：
                         // 不再直接把状态打成 DEAD 或弹账密，交给下一次探活重试。
@@ -297,6 +300,11 @@ object AuthGuard {
     /** WebView 落地后调用：导出已完成，这里只做复验与身份回填 */
     suspend fun verifyAfterLogin(system: AuthSystem): Boolean = withContext(Dispatchers.IO) {
         val ok = verifyWithRetry(system)
+        // 诊断事件：登录结果只有「成功/失败 + 系统名」，绝不写账号、密码、票据值
+        Diag.recordEvent(
+            "auth",
+            "${system.label} 登录" + if (ok) "成功" else "失败（落地后复验未通过）",
+        )
         if (ok) {
             SessionRegistry.markAlive(system)
             refreshIdentity(system)

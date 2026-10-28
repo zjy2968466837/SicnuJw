@@ -12,25 +12,30 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
- * 诊断日志：记录「发到解析器手里的原始响应」，用于排查页面结构变化（例如大一成绩表结构不明）。
+ * 诊断日志：记录「发到解析器手里的原始响应」与关键事件，用于排查页面结构变化与登录/网络故障。
  *
  * ## 为什么要有
- * 教务页是服务端渲染 + 回发，解析失败时用户只能看到「读取失败」，我们看不到页面长什么样。
- * 打开这里之后，每个响应（HTTP 与 WebView）都会落一条记录，导出成文本就能离线复现解析问题。
+ * 教务页是服务端渲染 + 回发，解析失败时用户只能看到「读取失败」，我们看不到页面长什么样；
+ * 登录失败、网络失败、崩溃更是只剩一句「暂时读不到」。记录响应 + 事件后，导出成文本就能离线复现问题。
  *
- * ## 隐私
- * - **默认关闭**，必须用户在「诊断日志」里手动打开（开源仓库不默认抓任何页面内容）。
- * - 记录前统一脱敏：本人学号/姓名按精确值替换，票据/Cookie/密码参数、身份证号、手机号、
- *   邮箱、10 位学号全部打码（见 [sanitize]）。导出文件头部会写明脱敏规则。
- * - 只落应用私有目录 `files/diag/`，不联网、不上传；只有用户点「导出」时才会写到用户选的位置。
- * - 单文件上限 8 MB，超出后轮转（只保留上一份），避免无限增长。
+ * ## 为什么默认开启
+ * 排查依赖「故障发生时那一次」的现场，事后让用户去设置里打开已经晚了（故障不可复现）。
+ * 默认开启的正当性由下面几条共同保证，缺一条都不成立：
+ * - **只落本机**：`files/diag/`（应用私有目录），不联网、不上传；只有用户点「导出」才写出文件。
+ * - **写入前脱敏**：本人学号/姓名按精确值替换，票据/Cookie/密码参数、身份证号、手机号、
+ *   邮箱、10 位学号全部打码（见 [sanitize]）；导出时再脱敏一次（纵深防御）。
+ * - **用户可随时关**：设置页开关仍然保留，关掉后连 WebView 的 JS 都不注入。
+ * - **禁区不抓**：`zhxg.sicnu.edu.cn` 整域禁止（含假期去向登记），见 [isBlocked]。
+ * - **体积与留存可控**：单文件上限 8 MB、超出轮转，随时可清空，卸载即删。
  *
  * ## 线程
  * 抓取发生在 OkHttp 回调线程 / WebView 线程，写入统一丢到单线程池，调用方零阻塞；
- * 任何异常都吞掉（诊断功能不能影响业务）。
+ * 任何异常都吞掉（诊断功能不能影响业务）。唯一例外是崩溃事件：进程马上会被杀，
+ * 异步排队会丢，见 [recordEvent] 的 `awaitWrite`。
  */
 object Diag {
     private const val PREFS = "scnu_diag"
@@ -41,6 +46,14 @@ object Diag {
     private const val MAX_FILE_BYTES = 8L * 1024 * 1024
     private const val MAX_BODY_CHARS = 200_000
     private const val MAX_WEB_BODY_CHARS = 400_000
+    private const val MAX_EVENT_CHARS = 2_000
+
+    /**
+     * 抓取默认开启：排查看的是「故障发生那一次」的现场，事后开关已经错过。
+     * 安全性由「本机私有目录 + 写入/导出双重脱敏 + 不联网 + 可随时关闭 + zhxg 整域禁抓」保证，
+     * 见文件头注释。用户显式关掉后写 false，一律以用户选择为准。
+     */
+    private const val DEFAULT_ENABLED = true
 
     private val io = Executors.newSingleThreadExecutor { r ->
         Thread(r, "diag-io").apply { isDaemon = true }
@@ -55,7 +68,7 @@ object Diag {
     fun isEnabled(ctx: Context? = null): Boolean {
         val c = ctx?.applicationContext ?: appCtx ?: return false
         return c.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_ENABLED, false)
+            .getBoolean(KEY_ENABLED, DEFAULT_ENABLED)
     }
 
     fun setEnabled(ctx: Context, enabled: Boolean) {
@@ -137,7 +150,44 @@ object Diag {
             .put("truncated", truncated)
             .put("body", safeBody)
         lastAt = System.currentTimeMillis()
-        io.execute {
+        append(ctx, obj)
+    }
+
+    // ─────────────────────────── 事件记录 ───────────────────────────
+
+    /**
+     * 事件型记录：登录节点（auth）、解析失败（parse）、网络失败（net）、崩溃（crash）。
+     *
+     * 与 [recordHttp]/[captureWebView] 的区别：没有 URL 与正文，只有一句人能直接读的摘要。
+     * [detail] 一律先脱敏再落盘（调用方仍然可以放心把异常摘要、页面路径放进来，
+     * 但**永远不要**主动拼学号/票据/密码——脱敏是兜底，不是许可）。
+     *
+     * 本函数自身吞掉所有异常，调用方不需要 try，也不该因为诊断失败影响业务。
+     *
+     * @param awaitWrite 崩溃路径专用：进程在 uncaught handler 返回后马上被杀，
+     *   异步排队大概率丢；置 true 时同步等一次写入（最多 2 秒）再返回。
+     */
+    fun recordEvent(type: String, detail: String, awaitWrite: Boolean = false) {
+        runCatching {
+            val ctx = appCtx ?: return
+            if (!isEnabled(ctx)) return
+            // 值本身没意义，但万一 detail 里带了禁抓域（例如异常消息回显了 URL），一并丢弃
+            if (isBlocked(detail)) return
+            val safe = sanitize(ctx, detail).take(MAX_EVENT_CHARS)
+            val obj = JSONObject()
+                .put("ts", System.currentTimeMillis())
+                .put("src", "event")
+                .put("type", type)
+                .put("detail", safe)
+            lastAt = System.currentTimeMillis()
+            append(ctx, obj, awaitWrite)
+        }
+    }
+
+    /** 追加一行：轮转规则只有这一处，HTTP/WebView/事件共用 */
+    private fun append(ctx: Context, obj: JSONObject, awaitWrite: Boolean = false) {
+        val line = obj.toString()
+        val task = Runnable {
             runCatching {
                 val f = file(ctx)
                 if (f.isFile && f.length() > MAX_FILE_BYTES) {
@@ -145,9 +195,14 @@ object Diag {
                     old.delete()
                     f.renameTo(old)
                 }
-                f.appendText(obj.toString() + "\n")
+                f.appendText(line + "\n")
             }
         }
+        if (!awaitWrite) {
+            io.execute(task)
+            return
+        }
+        runCatching { io.submit(task).get(2, TimeUnit.SECONDS) }
     }
 
     /** 清空捕获文件。同步删除（只有两个小文件），调用方负责放到 IO 线程。 */
@@ -171,11 +226,24 @@ object Diag {
                 val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date(ts))
                 // 二次脱敏（纵深防御）：记录时已脱敏一次，导出再跑一次，
                 // 防止将来新增的捕获路径漏了脱敏、或旧文件是旧版本写的。
+                val src = o.optString("src")
+                if (src == "event") {
+                    // 事件行只有一句摘要；同样过一遍 sanitize
+                    val block = buildString {
+                        append("\n===== ").append(time)
+                        append("  event  ").append(o.optString("type"))
+                        append(" =====\n")
+                        append(sanitize(ctx, o.optString("detail")))
+                        if (!endsWith("\n")) append('\n')
+                    }
+                    out.write(block.toByteArray(Charsets.UTF_8))
+                    return@forEachLine
+                }
                 val url = sanitize(ctx, o.optString("url"))
                 val body = sanitize(ctx, o.optString("body"))
                 val block = buildString {
                     append("\n===== ").append(time)
-                    append("  ").append(o.optString("src"))
+                    append("  ").append(src)
                     append("  HTTP ").append(o.optInt("status"))
                     append("  ").append(o.optString("ctype"))
                     append("  ").append(o.optInt("chars")).append(" chars")
@@ -203,8 +271,11 @@ object Diag {
         append("# 说明: 已按规则脱敏——本人学号/姓名按精确值替换，CASTGC/会话 Cookie/票据参数、\n")
         append("#       密码参数、身份证号、手机号、邮箱、10 位学号全部替换为占位符。\n")
         append("#       公开分享前请再自行过目；页面里可能仍有课程名/教师名等校内信息。\n")
+        append("# 记录类型: http/webview = 页面原文；event = 关键事件（auth 登录 / parse 解析失败 /\n")
+        append("#           net 网络失败 / crash 崩溃摘要），detail 只有一句脱敏后的描述。\n")
         append("#\n")
-        append("# 排查用法: 找到对应的 url + body，核对表格列头/字段名与解析器 (core/jw/*Parser.kt) 的取值。\n\n")
+        append("# 排查用法: 找到对应的 url + body，核对表格列头/字段名与解析器 (core/jw/*Parser.kt) 的取值；\n")
+        append("#           先看 crash/net 定位环境问题，再看 parse 附近的 http 记录核对页面结构。\n\n")
     }
 
     private fun file(ctx: Context): File {
@@ -272,9 +343,14 @@ object Diag {
             if (m.groupValues[3].isEmpty()) m.value else "${m.groupValues[1]}${m.groupValues[2]}<REDACTED>"
         }
         // 密码输入框：整段 <input> 里只要出现 password/passwd/pwd，就把 value 换掉
+        // 用户名输入框：CAS 登录页的 username 值就是学号——RE_ID_10 只兜得住 20 开头的
+        // 十位数，兜不住非标准号（研究生等），且明文留在 HTML 里没有排查价值，一并打码
         s = RE_INPUT_TAG.replace(s) { m ->
             val tag = m.value
-            if (!tag.contains("password", true) && !tag.contains("passwd", true) && !tag.contains("pwd", true)) {
+            val sensitive = tag.contains("password", true) || tag.contains("passwd", true) ||
+                tag.contains("pwd", true) || tag.contains("username", true) ||
+                tag.contains("user", true) || tag.contains("account", true)
+            if (!sensitive) {
                 tag
             } else {
                 RE_INPUT_VALUE.replace(tag) { v ->

@@ -24,7 +24,7 @@ import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
 /**
- * 使用统计上报（登录后一次/24 小时）。
+ * 使用统计上报（一次性：每个学号前缀只成功上报一次）。
  *
  * ## 只上传什么（改这段之前先读完）
  * 上传字段**只有**：学号前 4 位（年级前缀）+ 随机生成的匿名设备/账号标识 + 应用与系统版本 +
@@ -33,6 +33,12 @@ import javax.crypto.spec.GCMParameterSpec
  * **绝不上传**：完整学号、姓名、成绩、课表、Cookie/票据、任何页面内容、IMEI/序列号/广告 ID。
  * 完整学号在本机只用于缓存归属（`ScoreCache.profileCode`），本文件只对它调用 `take(4)`，
  * 不写入日志、不落盘、不进上报体。
+ *
+ * ## 一次性上报的含义
+ * 目的只是统计各年级（学号前 4 位）的使用人数分布，所以登录初始化时报一次就够了，
+ * 之后不再收集：某个前缀上报成功后即在 prefs 里留下 `reported_<prefix>` 标记，
+ * 此后该前缀的任何一次 `onAccountSeen` 都直接返回，不会重发。
+ * 标记**只在上报成功后写入**——失败（断网、服务端 5xx）不写，下次登录初始化还能再试。
  *
  * ## 关于「同账号多设备只算一次」
  * 这条**在只上传前 4 位的前提下做不到**，服务端只能按（设备, 账号标识）去重：
@@ -54,8 +60,8 @@ object StatsReporter {
     private const val TAG = "Stats"
     private const val PREFS = "scnu_stats"
     private const val KEY_STATS_ENABLED = "stats_enabled"
-    private const val KEY_LAST_SENT = "last_sent_"
-    private const val INTERVAL_MS = 24L * 60 * 60 * 1000
+    /** 每个学号前缀的「已成功上报」标记：true 即永久不再上报 */
+    private const val KEY_REPORTED = "reported_"
     private const val SCHEMA = 1
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -63,9 +69,9 @@ object StatsReporter {
      * 同一前缀的并发上报闸门。
      *
      * 为什么需要：`onAccountKnown` 在一次登录里会被调用多次（缓存回填 + 在线拉取 + 学工身份刷新），
-     * 而 24h 节流的时间戳是「发送成功后才写」，多个协程同时读到空值就会一起发出去
+     * 而 `reported_<prefix>` 标记是「发送成功后才写」，多个协程同时读到未标记就会一起发出去
      * （2026-10-28 真机实测：一次登录上报 3 次，服务端 reports 2→5）。
-     * 进程内先抢占，抢不到的直接放弃；跨进程靠 prefs 时间戳。
+     * 进程内先抢占，抢不到的直接放弃；跨进程靠 prefs 标记。
      */
     private val inflight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val client by lazy {
@@ -93,6 +99,7 @@ object StatsReporter {
      * 登录成功、换票回填、学生卡加载都会经过它）。
      *
      * 这里只取 `take(4)`；`studentCode` 的其余部分不会离开这个函数。
+     * 该前缀若已成功上报过，直接返回——整个生命周期只报一次，不按时间重复。
      */
     fun onAccountSeen(ctx: Context, studentCode: String) {
         val app = ctx.applicationContext
@@ -107,9 +114,10 @@ object StatsReporter {
             try {
                 runCatching {
                     val prefs = app.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-                    val now = System.currentTimeMillis()
-                    if (now - prefs.getLong(KEY_LAST_SENT + prefix, 0L) < INTERVAL_MS) return@runCatching
+                    // 已成功上报过的前缀永不再发；标记只在下面 post 成功后才写
+                    if (prefs.getBoolean(KEY_REPORTED + prefix, false)) return@runCatching
                     val endpoint = endpoint() ?: return@runCatching
+                    val now = System.currentTimeMillis()
 
                     val deviceId = StatsIdentity.getOrCreate(app, "device_id")
                     val accountRef = StatsIdentity.getOrCreate(app, "account_$prefix")
@@ -118,7 +126,7 @@ object StatsReporter {
 
                     val body = buildPayload(prefix, deviceId, accountRef, firstSeen.toLongOrNull() ?: now)
                     if (post(endpoint, body)) {
-                        prefs.edit().putLong(KEY_LAST_SENT + prefix, now).apply()
+                        prefs.edit().putBoolean(KEY_REPORTED + prefix, true).apply()
                     }
                 }.onFailure { Log.d(TAG, "统计上报未完成: ${it.javaClass.simpleName}") }
             } finally {

@@ -96,16 +96,26 @@ class DiagSanitizeTest {
     }
 
     @Test
-    fun `表单里的密码输入框也会打码`() {
+    fun `表单里的密码与用户名输入框也会打码`() {
         val html = "<input type=\"text\" name=\"username\" value=\"2023999999\">" +
             "<input type=\"password\" name=\"password\" value=\"Secr3t!\">" +
             "<input name=password value=Plain9>"
         val out = Diag.sanitizeText(html, sid, name)
         assertFalse(out.contains("Secr3t!"))
         assertFalse(out.contains("Plain9"))
+        assertFalse(out.contains("2023999999"))
         assertTrue(out.contains("password\" value=\"<REDACTED>"))
-        // 非密码输入框的 value 保留（用户名需要用于排查）
-        assertTrue(out.contains("username\" value=\"<SID>"))
+        // 用户名输入框的 value 一律打码：CAS 登录页里它就是学号，
+        // 且非标准号（研究生等）兜不住 RE_ID_10，明文留着也没有排查价值
+        assertTrue(out.contains("username\" value=\"<REDACTED>"))
+    }
+
+    @Test
+    fun `非用户名输入框的 value 保留`() {
+        // 教务回发控件（__EVENTTARGET 等）的 value 是页面结构的一部分，保留用于排查
+        val html = "<input type=\"hidden\" name=\"__EVENTTARGET\" value=\"ddlTerm\">"
+        val out = Diag.sanitizeText(html, sid, name)
+        assertEquals(html, out)
     }
 
     @Test
