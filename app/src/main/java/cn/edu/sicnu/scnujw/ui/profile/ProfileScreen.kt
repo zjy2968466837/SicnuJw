@@ -239,6 +239,10 @@ private fun ProfileFooter() {
             enabled = !checking,
         ) {
             scope.launch {
+                if (ScoreCache.profileCode(ctx) == null) {
+                    Toast.makeText(ctx, "登录后可检查更新", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
                 checking = true
                 val result = UpdateCenter.checkNow(ctx)
                 checking = false

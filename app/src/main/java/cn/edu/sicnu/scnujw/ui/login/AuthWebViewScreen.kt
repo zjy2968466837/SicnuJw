@@ -45,6 +45,7 @@ import cn.edu.sicnu.scnujw.core.jw.ScoreCache
 import cn.edu.sicnu.scnujw.core.jw.UsualPrefetch
 import cn.edu.sicnu.scnujw.core.net.SessionManager
 import cn.edu.sicnu.scnujw.core.net.WebViewCookieBridge
+import cn.edu.sicnu.scnujw.ui.update.UpdateCenter
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -143,6 +144,9 @@ fun AuthWebViewScreen(
                 // 底栏 tab 的 popUpTo("schedule") 依赖课表始终在栈底；否则 tab 点击只会叠加历史页。
                 nav.navigate("schedule") { popUpTo(nav.graph.id) { inclusive = false } }
                 if (ret != "schedule") nav.navigate(ret) { launchSingleTop = true }
+                // 更新检查限定已登录设备：首次登录完成时补一次（启动时因未登录被跳过）。
+                // 直接在主线程调用：网络在 UpdateManager 内部切 IO，弹窗状态也在主线程写。
+                UpdateCenter.checkNow(ctx)
             } else {
                 error = PageError(url, "${system.label}会话未建立。若刚完成登录，可直接重试一次。")
             }

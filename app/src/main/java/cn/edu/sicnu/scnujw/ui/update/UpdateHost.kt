@@ -49,6 +49,8 @@ import java.util.Locale
  *
  * 每次进程启动等 1.5s 后自动检查一次（LaunchedEffect(Unit) 只跑一次），
  * 不做跨启动的 24h 节流——当天第二次打开也能看到新版本；
+ * **只对已登录设备检查**（`profile.json` 有学号即视为通过统一认证登录过；软门槛，
+ * 服务器无法验证），未登录时直接跳过；登录成功后再补一次（见 AuthWebViewScreen）；
  * 检查失败静默（只有「我的 → 检查更新」手动触发时才提示原因）。
  */
 @Composable
@@ -56,6 +58,9 @@ fun UpdateHost(content: @Composable () -> Unit) {
     val ctx = LocalContext.current
     LaunchedEffect(Unit) {
         delay(1500)
+        // 方案 2（2026-10-29）：更新只对已登录设备下发/提示。profile.json 在登录成功时写入，
+        // 登出不清（设备仍算"登录过"）；未登录启动不请求清单，登录成功后再补一次。
+        if (cn.edu.sicnu.scnujw.core.jw.ScoreCache.profileCode(ctx) == null) return@LaunchedEffect
         UpdateCenter.checkNow(ctx)
     }
     content()
