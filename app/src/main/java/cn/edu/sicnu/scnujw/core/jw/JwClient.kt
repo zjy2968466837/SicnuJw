@@ -1,6 +1,7 @@
 package cn.edu.sicnu.scnujw.core.jw
 
 import android.os.SystemClock
+import android.util.Log
 import cn.edu.sicnu.scnujw.core.auth.AuthGuard
 import cn.edu.sicnu.scnujw.core.auth.AuthSystem
 import cn.edu.sicnu.scnujw.core.net.JwTraffic
@@ -26,6 +27,7 @@ import kotlin.coroutines.resumeWithException
  * 端点清单实测自 2026-10 探测，详见 scnu-jiaowu/REPORT.md。
  */
 object JwClient {
+    private const val TAG = "JwClient"
     private const val BASE = "http://202.115.194.60"
 
     /**
@@ -123,6 +125,23 @@ object JwClient {
                                 body = body,
                                 contentType = r.header("Content-Type"),
                             )
+                            // 会话失效/被顶：正方把请求 302 到 /error.aspx（"一台计算机同一时间只能一个用户登录"）。
+                            // 登录链路用的 client 关掉了自动跟随，所以这里能拿到 302；必须按「登录失效」处理，
+                            // 不能当作普通 HTTP 错误（否则界面只显示"教务系统没有正常响应"，没有去验证入口）。
+                            if (isAuthRedirect(r.code)) {
+                                val loc = r.header("Location").orEmpty()
+                                Log.w(TAG, "教务返回 $r.code → ${loc.take(80)}：按会话失效处理")
+                                AuthGuard.markDead(AuthSystem.ZF)
+                                if (cont.isActive) {
+                                    cont.resumeWithException(
+                                        AuthGuard.AuthExpiredException(
+                                            AuthSystem.ZF,
+                                            "教务会话已失效（HTTP ${r.code}）",
+                                        ),
+                                    )
+                                }
+                                return
+                            }
                             if (cont.isActive) cont.resume(r.code to body)
                         }
                     }
@@ -134,12 +153,35 @@ object JwClient {
     }
 
     suspend fun get(path: String): Document = withContext(Dispatchers.IO) {
+        withSessionRenewal { getOnce(path) }
+    }
+
+    private suspend fun getOnce(path: String): Document {
         val url = "$BASE/$path?sid=${sid()}"
         val (code, html) = execute(SessionManager.client, Request.Builder().url(url).build())
         check(code == 200) { "教务请求失败 $code: $path（会话可能被踢）" }
         checkPageValid(html, path)
-        Jsoup.parse(html)
+        return Jsoup.parse(html)
     }
+
+    /** 302/303/307/308 一律视为失效（本项目只对正方用这个 client，登录链路不经过这里） */
+    internal fun isAuthRedirect(code: Int): Boolean =
+        code == 301 || code == 302 || code == 303 || code == 307 || code == 308
+
+    /**
+     * 会话失效时先尝试**静默换票**再重试一次（CASTGC 还在就能自动恢复，不用用户重新登录）。
+     *
+     * 只在 [get]/[postBack] 两个入口包：它们是所有页面请求的漏斗；换票失败
+     * （需要人工验证/网络中断）会抛给调用方，由 DataIssue 分类给出「去验证」或「无法连接校园网」。
+     */
+    private suspend fun <T> withSessionRenewal(block: suspend () -> T): T =
+        try {
+            block()
+        } catch (e: AuthGuard.AuthExpiredException) {
+            Log.w(TAG, "教务会话失效，尝试静默换票后重试: ${e.message}")
+            AuthGuard.ensure(AuthSystem.ZF)
+            block()
+        }
 
     /**
      * 平时成绩首屏 GET：用慢速 client（45s），并标记为低优先级。
@@ -170,6 +212,12 @@ object JwClient {
                          bulk: Boolean = false,
                          lowPriority: Boolean = false): Document =
         withContext(Dispatchers.IO) {
+            withSessionRenewal { postBackOnce(path, doc, eventTarget, eventArgument, extraFields, slow, bulk, lowPriority) }
+        }
+
+    private suspend fun postBackOnce(path: String, doc: Document, eventTarget: String,
+                                     eventArgument: String, extraFields: Map<String, String>,
+                                     slow: Boolean, bulk: Boolean, lowPriority: Boolean): Document {
             fun hidden(name: String): String =
                 doc.selectFirst("input[name=$name]")?.attr("value") ?: ""
 
@@ -194,8 +242,8 @@ object JwClient {
             )
             check(code == 200) { "教务回发失败 $code: $path（会话可能被踢）" }
             checkPageValid(html, path)
-            Jsoup.parse(html)
-        }
+            return Jsoup.parse(html)
+    }
 
     /**
      * 选课成绩（全学期成绩单）。实测三步回发链：
