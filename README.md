@@ -11,6 +11,10 @@
 
 深色主题：![深色课表](screenshots/schedule-dark.png)
 
+## 发行历史
+
+当前版本 **1.2（versionCode 17）**。完整变更见 **[CHANGELOG.md](CHANGELOG.md)**（1.0 → 1.2 的发行记录）；应用内更新只读自建服务器，GitHub Release 仅作人工下载镜像。
+
 ## 功能
 
 - **登录**：统一身份认证（CAS + 双因子）在内嵌官方页面完成，本应用不接触密码。
