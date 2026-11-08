@@ -1,0 +1,14 @@
+{
+  "versionCode": 20,
+  "versionName": "2.0",
+  "url": "https://sicnujw-update.eastasia.cloudapp.azure.com/SicnuJw-2.0.apk",
+  "sha256": "097402f4b11e45f912c09528cf028e7fc55e759b351e1dd95282e00558aec0ee",
+  "size": 40609293,
+  "force": false,
+  "minSupportedVersionCode": 0,
+  "notes": [
+    "应用更名为「狮山生活」",
+    "新增图书馆空间、川师微生活、淋浴/课表/占座/校历",
+    "新增应用内通知"
+  ]
+}
