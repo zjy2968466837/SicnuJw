@@ -2,17 +2,24 @@
   "versionCode": 20,
   "versionName": "2.0",
   "url": "https://sicnujw-update.eastasia.cloudapp.azure.com/SicnuJw-2.0.apk",
+  "sha256": "097402f4b11e45f912c09528cf028e7fc55e759b351e1dd95282e00558aec0ee",
+  "size": 40609293,
+  "minSupportedVersionCode": 0,
+  "force": false,
+  "notes": [
+    "应用更名为「狮山生活」",
+    "自动下载失败时，手动下载：http://52.184.100.132/",
+    "蓝奏云：https://wwbak.lanzoub.com/b01i5zsiuh 密码 2m0l",
+    "夸克网盘：https://pan.quark.cn/s/afe73beb98c8"
+  ],
   "urls": [
     "http://52.184.100.132/SicnuJw-2.0.apk",
     "https://sicnujw-update.eastasia.cloudapp.azure.com:8443/SicnuJw-2.0.apk"
   ],
-  "sha256": "097402f4b11e45f912c09528cf028e7fc55e759b351e1dd95282e00558aec0ee",
-  "size": 40609293,
-  "force": false,
-  "minSupportedVersionCode": 0,
-  "notes": [
-    "应用更名为「狮山生活」",
-    "新增图书馆空间、川师微生活、淋浴/课表/占座/校历",
-    "新增应用内通知"
-  ]
+  "manual": {
+    "page": "http://52.184.100.132/",
+    "lanzou": "https://wwbak.lanzoub.com/b01i5zsiuh",
+    "lanzouPassword": "2m0l",
+    "quark": "https://pan.quark.cn/s/afe73beb98c8"
+  }
 }
